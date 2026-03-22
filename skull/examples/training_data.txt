@@ -1,0 +1,5 @@
+Hallo Welt! Das ist ein Test fuer den Skull Trainer.
+Skull ist eine Programmiersprache fuer KI-Training.
+Das Ziel ist es LLMs einfacher und schneller zu trainieren.
+Jeder soll in der Lage sein sein eigenes Modell zu trainieren.
+Skull macht das moeglich ohne viel Geld oder Wissen.

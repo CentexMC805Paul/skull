@@ -1,0 +1,74 @@
+// test.skull — Skull laeuft wirklich!
+
+// Variablen
+define name = "Skull"
+define version = 0.3
+print("Hallo von", name, "v0.3!")
+
+// Mathematik
+define x = 10
+define y = 3
+print("x + y =", x + y)
+print("x * y =", x * y)
+print("x / y =", x / y)
+print("sqrt(x) =", sqrt(x))
+
+// if / else
+if x > 5 {
+    print("x ist gross")
+} else {
+    print("x ist klein")
+}
+
+// Funktion definieren
+define func quadrat(n) {
+    return n * n
+}
+
+print("quadrat(5) =", quadrat(5))
+print("quadrat(12) =", quadrat(12))
+
+// Funktion mit Bedingung
+define func max_wert(a, b) {
+    if a > b {
+        return a
+    } else {
+        return b
+    }
+}
+
+print("max(7, 3) =", max_wert(7, 3))
+print("max(2, 9) =", max_wert(2, 9))
+
+// Schleife
+print("Zahlen 1 bis 5:")
+for i in 1..5 {
+    print(i)
+}
+
+// Verschachtelte Funktion
+define func summe(von, bis) {
+    define total = 0
+    for i in von..bis {
+        total = total + i
+    }
+    return total
+}
+
+print("Summe 1 bis 100 =", summe(1, 100))
+
+// Modell definieren (Skull-spezifisch!)
+define model MeinLLM {
+    vocab  = 50000
+    dim    = 512
+    layers = 6
+    heads  = 8
+}
+
+// Training starten
+train MeinLLM {
+    data   = "texte.txt"
+    epochs = 100
+    rate   = 0.001
+    batch  = 32
+}

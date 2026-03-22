@@ -1,0 +1,26 @@
+// Erstes echtes Skull-Programm
+// Testet den Lexer
+
+define x = 42
+define name = "Skull"
+
+define model MyLLM {
+    dim    = 512
+    layers = 6
+    heads  = 8
+}
+
+define func forward(x) {
+    define h = relu(x)
+    return h
+}
+
+if x > 10 {
+    print("gross")
+} else {
+    print("klein")
+}
+
+for i in 1..100 {
+    print(i)
+}

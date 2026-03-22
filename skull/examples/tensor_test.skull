@@ -1,0 +1,60 @@
+// tensor_test.skull — Skull v0.4.0
+// Tensoren und KI-Mathematik in Skull
+
+skull_info()
+
+// --- Tensoren erstellen ---
+define W1 = rand_tensor(4, 3)
+define W2 = rand_tensor(2, 4)
+define x  = rand_tensor(3, 1)
+
+print("W1:")
+print(W1)
+print("x:")
+print(x)
+
+// --- Vorwaerts-Pass ---
+define h    = relu(W1 * x)
+define out  = sigmoid(W2 * h)
+
+print("Ausgabe nach sigmoid:")
+print(out)
+
+// --- Loss berechnen ---
+define target = zeros(2, 1)
+define loss   = mse_loss(out, target)
+
+print("Loss:")
+print(loss)
+
+// --- Backpropagation ---
+backward(loss)
+
+print("Gradients von W1 berechnet!")
+
+// --- Gewichte aktualisieren ---
+update(W1, 0.01)
+update(W2, 0.01)
+
+print("Gewichte aktualisiert!")
+
+// --- Trainingsschleife ---
+print("Trainiere 10 Epochen...")
+
+define W = rand_tensor(2, 2)
+define ziel = zeros(2, 1)
+define eingabe = ones(2, 1)
+
+for epoche in 1..10 {
+    zero_grad(W)
+    define vorhersage = sigmoid(W * eingabe)
+    define l = mse_loss(vorhersage, ziel)
+    backward(l)
+    update(W, 0.1)
+    if epoche == 10 {
+        print("Epoche 10 - Loss:")
+        print(l)
+    }
+}
+
+print("Training abgeschlossen!")

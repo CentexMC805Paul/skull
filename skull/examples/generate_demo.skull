@@ -1,0 +1,27 @@
+// generate_demo.skull — Skull v0.6.0
+// Erst trainieren, dann Text generieren!
+
+skull_info()
+
+// 1. Modell definieren
+define model MeinModell {
+    dim   = 64
+    vocab = 256
+}
+
+// 2. Trainieren
+train MeinModell {
+    data   = "examples/training_data.txt"
+    epochs = 100
+    rate   = 0.005
+}
+
+// 3. Text generieren mit den trainierten Gewichten
+generate MeinModell {
+    weights     = "examples/training_data.txt.weights"
+    prompt      = "Skull"
+    tokens      = 80
+    temperature = 0.8
+}
+
+print("Fertig!")

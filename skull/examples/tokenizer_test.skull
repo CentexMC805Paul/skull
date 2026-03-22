@@ -1,0 +1,26 @@
+// tokenizer_test.skull — Testet alle neuen Features in v0.7.0
+
+skull_info()
+
+// --- Test 1: Normales TXT Training (wie bisher) ---
+print("=== Test 1: TXT Training ===")
+
+define model TextModell {
+    dim   = 64
+    vocab = 256
+}
+
+train TextModell {
+    data   = "examples/training_data.txt"
+    epochs = 30
+    rate   = 0.005
+}
+
+generate TextModell {
+    weights     = "examples/training_data.txt.weights"
+    prompt      = "Skull"
+    tokens      = 60
+    temperature = 0.8
+}
+
+print("Test 1 abgeschlossen!")

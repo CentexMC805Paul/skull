@@ -1,0 +1,36 @@
+// format_test.skull — testet alle unterstuetzten Dateiformate
+
+skull_info()
+gpu_info()
+
+// --- Markdown Training ---
+print("=== Markdown Training ===")
+define model MdModell { dim = 64  vocab = 256 }
+train MdModell {
+    data   = "examples/training_data.md"
+    epochs = 20
+    rate   = 0.005
+}
+generate MdModell {
+    weights     = "examples/training_data.md.weights"
+    prompt      = "Skull"
+    tokens      = 50
+    temperature = 0.8
+}
+
+// --- JSONL Training ---
+print("=== JSONL Training ===")
+define model JsonModell { dim = 64  vocab = 256 }
+train JsonModell {
+    data   = "examples/training_data.jsonl"
+    epochs = 20
+    rate   = 0.005
+}
+generate JsonModell {
+    weights     = "examples/training_data.jsonl.weights"
+    prompt      = "Skull"
+    tokens      = 50
+    temperature = 0.8
+}
+
+print("Alle Format-Tests abgeschlossen!")

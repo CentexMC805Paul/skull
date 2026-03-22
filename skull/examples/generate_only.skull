@@ -1,0 +1,13 @@
+// generate_only.skull — Nur generieren mit vorhandenen Gewichten
+
+define model MeinModell {
+    dim   = 64
+    vocab = 256
+}
+
+generate MeinModell {
+    weights     = "examples/training_data.txt.weights"
+    prompt      = "Skull ist"
+    tokens      = 100
+    temperature = 0.9
+}

@@ -1,0 +1,18 @@
+// train_demo.skull — Erstes echtes Training in Skull!
+
+skull_info()
+
+// Modell definieren
+define model MeinModell {
+    dim   = 64
+    vocab = 256
+}
+
+// Training starten
+train MeinModell {
+    data   = "examples/training_data.txt"
+    epochs = 50
+    rate   = 0.01
+}
+
+print("Training fertig!")
