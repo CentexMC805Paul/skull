@@ -1,30 +1,49 @@
-# The Skull Project
+# Skull Project
 
-Making LLM training accessible to everyone — through better tools and better math.
+Two repositories, one goal: make LLM training accessible to everyone.
 
-## Two Projects, One Goal
+---
 
-| | [skull](./skull) | [skull-research](./skull-research) |
-|---|---|---|
-| **What** | A programming language for AI training | Math experiments to make training faster |
-| **Status** | In development | Exploring |
-| **For who** | Anyone who wants to train a model | Developers and researchers |
-| **Timeline** | Now | Long term |
+## [skull/](skull/)
 
-They share the same core. Discoveries from research flow directly into the language.
+A programming language built from the ground up for training language models.
 
-## The Vision
+```skull
+define model MyLLM { dim = 128  vocab = 256 }
 
-Right now, training your own language model requires money, time, and deep technical knowledge.  
-Most people who want to build their own AI simply can't.
+train MyLLM {
+    data   = "my_text.txt"
+    epochs = 100
+    rate   = 0.001
+}
 
-Skull changes that.
+generate MyLLM {
+    weights     = "my_text.txt.weights"
+    prompt      = "Hello"
+    tokens      = 100
+}
+```
 
-## Getting Started
+**Status:** v0.7.0 — working, builds on Windows with Visual Studio
 
-- Want to train a model? → [skull](./skull)
-- Want to help make training faster at a math level? → [skull-research](./skull-research)
+---
+
+## [skull-research/](skull-research/)
+
+Exploring new mathematics to make LLM training fundamentally faster.
+
+**Status:** Early — collecting open questions, starting experiments
+
+---
+
+## Why?
+
+Training a language model today requires money, a powerful GPU, and deep technical knowledge. Most people who want to build their own AI simply cannot.
+
+Skull is the attempt to change that.
+
+---
 
 ## License
 
-MIT
+MIT — free for everything, forever.
