@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <cstdlib>
+#include <regex>
 
 // Skull Version
 #define SKULL_VERSION "1.0.0"
@@ -244,9 +245,4 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
-// Einfache regex_replace Implementierung für ältere Compiler
-namespace std {
-    string regex_replace(const string& input, const regex& pattern, const string& replacement) {
-        return regex_replace(input, pattern, replacement);
-    }
-}
+// Keine eigene regex_replace Implementierung nötig, da <regex> eingebunden ist
