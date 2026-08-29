@@ -1,0 +1,20 @@
+// train.skull - Einfaches Training-Beispiel
+// Verwendung: skull train.skull
+
+// Info anzeigen
+skull_info()
+
+// Einfaches Modell definieren
+define model MeinModell {
+    dim   = 64    // Dimension (kleiner = schneller, größer = besser)
+    vocab = 256   // Vokabular-Größe
+}
+
+// Training mit einfachen Einstellungen
+train MeinModell {
+    data   = "examples/training_data.txt"  // Trainingsdaten
+    epochs = 50                          // Anzahl Durchläufe
+    rate   = 0.01                        // Lernrate
+}
+
+print("Training abgeschlossen! Gewichte gespeichert in: training_data.txt.weights")

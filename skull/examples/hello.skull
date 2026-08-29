@@ -1,26 +1,39 @@
-// Erstes echtes Skull-Programm
-// Testet den Lexer
+// hello.skull - Einfaches Beispiel für Grundfunktionen
+// Verwendung: skull hello.skull
 
+// Info anzeigen
+skull_info()
+
+// Variablen
 define x = 42
 define name = "Skull"
 
-define model MyLLM {
-    dim    = 512
-    layers = 6
-    heads  = 8
-}
+print("Hallo von", name)
+print("x =", x)
 
-define func forward(x) {
-    define h = relu(x)
-    return h
-}
+// Mathematik
+define a = 10
+define b = 3
+print("a + b =", a + b)
+print("a * b =", a * b)
 
+// Funktion
+define func quadrat(n) {
+    return n * n
+}
+print("quadrat(5) =", quadrat(5))
+
+// Bedingung
 if x > 10 {
-    print("gross")
+    print("x ist groß")
 } else {
-    print("klein")
+    print("x ist klein")
 }
 
-for i in 1..100 {
+// Schleife
+print("Zahlen 1 bis 5:")
+for i in 1..5 {
     print(i)
 }
+
+print("Fertig!")
