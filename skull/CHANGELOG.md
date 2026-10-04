@@ -47,6 +47,13 @@ size as before; most of the "v1.0.0" feature list below was announced but never 
 
 ### ➕ Added
 
+- **Validation.** `train` holds back the last 10 % of the data (`val`, at most 50 000 tokens) and
+  reports validation loss and perplexity every epoch. The weights with the best validation loss are
+  saved (not the last epoch's), `patience = N` stops after N epochs without improvement. Skipped with a
+  note when there is too little data. New builtins `last_loss()`, `last_val_loss()`,
+  `last_best_epoch()`. The training loop is now one shared frame (`run_training`) with the two models
+  behind a common interface; `tests/traincheck.cpp` tests it exactly with a scripted mock model
+  (mutation-tested).
 - **Transformer model** (`context > 1`): causal multi-head self-attention, pre-LayerNorm, GELU MLP,
   any number of layers, hand-written backward pass (`src/transformer.h`), Adam with gradient
   clipping. Selected via the model fields `context`, `heads`, `layers`. The backward pass is

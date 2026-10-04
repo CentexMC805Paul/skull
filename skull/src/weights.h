@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <sstream>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -111,12 +112,8 @@ inline BPETokenizer rebuild_bpe(const std::vector<std::pair<std::string, std::st
     return tok;
 }
 
-inline void save_weights(const std::string& path, const SkullWeights& w) {
+inline void save_weights_stream(std::ostream& f, const SkullWeights& w) {
     using namespace weights_detail;
-    std::ofstream f(path, std::ios::binary);
-    if (!f.is_open())
-        throw std::runtime_error("Gewichte konnten nicht geschrieben werden: " + path);
-
     if (w.is_transformer) {
         f.write("SKULT", 5);
         put_u32(f, 1);   // Format-Version
@@ -147,6 +144,13 @@ inline void save_weights(const std::string& path, const SkullWeights& w) {
             put_str(f, m.second);
         }
     }
+}
+
+inline void save_weights(const std::string& path, const SkullWeights& w) {
+    std::ofstream f(path, std::ios::binary);
+    if (!f.is_open())
+        throw std::runtime_error("Gewichte konnten nicht geschrieben werden: " + path);
+    save_weights_stream(f, w);
     f.flush();
     if (!f)
         throw std::runtime_error("Fehler beim Schreiben der Gewichte: " + path);
@@ -179,13 +183,9 @@ inline void read_tokenizer_section(std::istream& f, uint64_t file_size, uint64_t
             std::to_string(vocab) + " vs " + std::to_string(w.bpe.vocab_size()) + ")");
 }
 
-inline SkullWeights load_weights(const std::string& path) {
+// Liest Gewichte aus einem Stream (Datei oder Speicherabbild); `path` dient nur den Fehlermeldungen.
+inline SkullWeights load_weights_stream(std::istream& f, const std::string& path) {
     using namespace weights_detail;
-    std::ifstream f(path, std::ios::binary);
-    if (!f.is_open())
-        throw std::runtime_error(
-            "Gewichte nicht gefunden: " + path + " (zuerst trainieren: train Modell { ... })");
-
     f.seekg(0, std::ios::end);
     const uint64_t file_size = (uint64_t)f.tellg();
     f.seekg(0, std::ios::beg);
@@ -266,4 +266,12 @@ inline SkullWeights load_weights(const std::string& path) {
 
     read_tokenizer_section(f, file_size, expected, w, vocab, path);
     return w;
+}
+
+inline SkullWeights load_weights(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open())
+        throw std::runtime_error(
+            "Gewichte nicht gefunden: " + path + " (zuerst trainieren: train Modell { ... })");
+    return load_weights_stream(f, path);
 }

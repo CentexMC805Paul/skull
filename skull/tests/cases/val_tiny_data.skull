@@ -1,0 +1,3 @@
+// zu wenig Daten fuer eine Validierung: Hinweis, es wird auf allen Daten trainiert
+define model M { dim = 8 }
+train M { data = "data/repeat.txt"  out = "data/val_tiny.weights"  epochs = 2  rate = 0.05 }

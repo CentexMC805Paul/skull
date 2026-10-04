@@ -1,0 +1,8 @@
+// last_loss() / last_val_loss() / last_best_epoch() liefern das Ergebnis des letzten train
+define model M { dim = 16 }
+train M { data = "data/late.txt"  out = "data/val_builtins.weights"  epochs = 5  rate = 0.05 }
+if last_val_loss() > 0 and last_loss() > 0 and last_best_epoch() >= 1 and last_best_epoch() <= 5 {
+    print("BUILTINS OK")
+} else {
+    print("BUILTINS FALSCH")
+}

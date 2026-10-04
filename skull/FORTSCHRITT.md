@@ -35,6 +35,8 @@ train Mini { data = "text.txt"  out = "mini.weights"  epochs = 200  rate = 0.003
   Hand, gegen endliche Differenzen geprüft.
 - Zufallszahlen sind auf jedem System identisch (`rng.h`): gleicher Seed = gleiche Startgewichte.
 - Alle Tokens pro Epoche (oder Fenster mit `steps`), echtes Mini-Batch, BPE optional.
+- Validierung (letzte 10 % der Daten): Val-Loss und Perplexität pro Epoche, bestes Modell wird
+  gespeichert, optional Early Stopping (`patience`). `last_loss()`, `last_val_loss()` im Skript.
 - Konstanter Speicherbedarf, kein Autograd-Graph im Trainingsschritt.
 - Formate: `.txt`, `.md`, `.json`, `.jsonl`, `.csv`.
 - Rechnet auf der CPU. `gpu = true` erkennt nur das Gerät.
@@ -69,7 +71,7 @@ skull/src/
   rng.h          — plattformunabhängige Zufallszahlen
   tokenizer.h    — Dateiformate + BPE
   weights.h      — Gewichte speichern/laden (mit Prüfung)
-  trainer.h      — Training
+  trainer.h      — Trainingsrahmen (Validierung, Early Stopping), Bigram-Modell, Transformer-Trainer
   generator.h    — Textgenerierung
   gpu.h          — OpenCL-Geräteerkennung (noch ohne Rechenarbeit)
   main.cpp       — Einstiegspunkt

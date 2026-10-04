@@ -139,6 +139,8 @@ private:
     std::map<std::string, SkullFunction> functions;
     std::map<std::string, const ModelStmt*> models;
     int call_depth = 0;
+    TrainResult last_train_;
+    bool has_train_ = false;
 
     struct DepthGuard {
         int& depth;
@@ -269,6 +271,22 @@ private:
         if (name == "gpu_info")   { skull_print_gpu_status(); return SkullValue(); }
         // Anzahl lebender Tensoren (fuer Speicherleck-Tests)
         if (name == "live_tensors") return SkullValue((double)TensorLiveCounter::count);
+        // Ergebnis des letzten train-Blocks (fuer Vergleiche und Parameter-Suchen im Skript)
+        if (name == "last_loss") {
+            if (!has_train_) throw std::runtime_error("Zeile " + std::to_string(line) + ": last_loss(): es lief noch kein train");
+            return SkullValue(last_train_.train_loss);
+        }
+        if (name == "last_val_loss") {
+            if (!has_train_) throw std::runtime_error("Zeile " + std::to_string(line) + ": last_val_loss(): es lief noch kein train");
+            if (!last_train_.has_val)
+                throw std::runtime_error("Zeile " + std::to_string(line) +
+                    ": last_val_loss(): das letzte train hatte keine Validierung (val > 0 und genug Daten noetig)");
+            return SkullValue(last_train_.val_loss);
+        }
+        if (name == "last_best_epoch") {
+            if (!has_train_) throw std::runtime_error("Zeile " + std::to_string(line) + ": last_best_epoch(): es lief noch kein train");
+            return SkullValue((double)last_train_.best_epoch);
+        }
 
         if (name == "rand_tensor" || name == "zeros" || name == "ones") {
             need_args(n, args, 2);
@@ -382,7 +400,7 @@ private:
             for (const auto& f : n->fields) names.push_back({f.name, f.line});
             warn_fields("train", n->model_name, names,
                         {"data", "out", "epochs", "rate", "batch", "dim", "vocab", "steps",
-                         "context", "heads", "layers",
+                         "context", "heads", "layers", "val", "patience",
                          "bpe", "bpe_vocab", "gpu", "prefer_amd"}, {});
             for (const auto& f : n->fields) {
                 SkullValue val = eval_expr(f.value.get(), env);
@@ -397,13 +415,16 @@ private:
                 if (f.name == "context")    cfg.context    = to_size(val, f.line, "context");
                 if (f.name == "heads")      cfg.heads      = to_size(val, f.line, "heads");
                 if (f.name == "layers")     cfg.layers     = to_size(val, f.line, "layers");
+                if (f.name == "val")        cfg.val        = val.as_number(f.line);
+                if (f.name == "patience")   cfg.patience   = to_int(val, f.line, "patience");
                 if (f.name == "bpe")        cfg.use_bpe    = val.is_truthy();
                 if (f.name == "bpe_vocab")  cfg.bpe_vocab  = to_int(val, f.line, "bpe_vocab");
                 if (f.name == "gpu")        cfg.use_gpu    = val.is_truthy();
                 if (f.name == "prefer_amd") cfg.prefer_amd = val.is_truthy();
             }
             try {
-                skull_train(cfg);
+                last_train_ = skull_train(cfg);
+                has_train_  = true;
             } catch (const std::runtime_error& e) {
                 throw std::runtime_error("Zeile " + std::to_string(n->line) + ": " + e.what());
             }

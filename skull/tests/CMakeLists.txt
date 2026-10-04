@@ -12,25 +12,31 @@
 #  mit -DSKULL_SANITIZE=ON zusaetzlich AddressSanitizer/LeakSanitizer.
 # ============================================================
 
-# ---- C++-Test: Gradiententest des Transformers (endliche Differenzen) ----
-add_executable(skull_gradcheck gradcheck.cpp)
-target_include_directories(skull_gradcheck PRIVATE "${CMAKE_SOURCE_DIR}/src")
-target_link_libraries(skull_gradcheck PRIVATE skull_flags)
-set_target_properties(skull_gradcheck PROPERTIES CXX_EXTENSIONS OFF
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/tests"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/tests")
-add_test(NAME transformer_gradcheck COMMAND skull_gradcheck)
+# ---- C++-Tests (eigene Executables, gleiche Compiler-Flags wie das Programm) ----
+# skull_cpp_test(<test-name> <quelle.cpp> [WORKING_DIRECTORY <dir>])
+function(skull_cpp_test name source)
+    cmake_parse_arguments(T "" "WORKING_DIRECTORY" "" ${ARGN})
+    get_filename_component(exe "${source}" NAME_WE)
+    add_executable(skull_${exe} ${source})
+    target_include_directories(skull_${exe} PRIVATE "${CMAKE_SOURCE_DIR}/src")
+    target_link_libraries(skull_${exe} PRIVATE skull_flags)
+    set_target_properties(skull_${exe} PROPERTIES CXX_EXTENSIONS OFF
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/tests")
+    if(T_WORKING_DIRECTORY)
+        add_test(NAME ${name} COMMAND skull_${exe} WORKING_DIRECTORY "${T_WORKING_DIRECTORY}")
+    else()
+        add_test(NAME ${name} COMMAND skull_${exe})
+    endif()
+endfunction()
 
-# ---- C++-Test: Zufallszahlen muessen auf jedem System gleich sein (src/rng.h) ----
-add_executable(skull_rngcheck rngcheck.cpp)
-target_include_directories(skull_rngcheck PRIVATE "${CMAKE_SOURCE_DIR}/src")
-target_link_libraries(skull_rngcheck PRIVATE skull_flags)
-set_target_properties(skull_rngcheck PROPERTIES CXX_EXTENSIONS OFF
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/tests"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/tests")
-add_test(NAME rng_platform_independent COMMAND skull_rngcheck)
+# Gradiententest des Transformers (endliche Differenzen), Kausalitaet, Adam
+skull_cpp_test(transformer_gradcheck gradcheck.cpp)
+# Zufallszahlen muessen auf jedem System gleich sein (src/rng.h)
+skull_cpp_test(rng_platform_independent rngcheck.cpp)
+# Trainingsrahmen: bestes Validierungs-Modell, Early Stopping, Datenaufteilung
+skull_cpp_test(training_framework traincheck.cpp WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
 
 set(SKULL_TESTENV "${CMAKE_BINARY_DIR}/testenv")
 file(REMOVE_RECURSE "${SKULL_TESTENV}")
@@ -118,3 +124,14 @@ skull_case(tf_unused_fields         cases/tf_unused_fields.skull         MATCH "
 skull_case(tf_context_mismatch      cases/tf_context_mismatch.skull      MATCH "WARNUNG. Modell definiert context=4.*heads=1.*layers=3")
 skull_case(tf_truncated_weights     cases/tf_truncated_weights.skull     EXIT 1 MATCH "abgeschnitten oder beschaedigt")
 skull_case(tf_batch_steps           cases/tf_batch_steps.skull           MATCH "Sequenzen/Epoche: 20")
+
+# ---- Validierung ----
+skull_case(val_split_info           cases/val_split_info.skull           MATCH "Validierung: 250 Token \\(10 % vom Dateiende\\), Training: 2250 Token.*Val: .*Perplexitaet.*Beste Validierung: Epoche")
+skull_case(val_builtins             cases/val_builtins.skull             MATCH "BUILTINS OK" NO_MATCH "BUILTINS FALSCH")
+skull_case(val_off                  cases/val_off.skull                  EXIT 1 MATCH "last_val_loss\\(\\): das letzte train hatte keine Validierung")
+skull_case(val_off_info             cases/val_off_info.skull             MATCH "Loss: " NO_MATCH "Val: ")
+skull_case(val_bad_value            cases/val_bad_value.skull            EXIT 1 MATCH "'val' muss zwischen 0 und 0.5")
+skull_case(val_tiny_data            cases/val_tiny_data.skull            MATCH "Validierung uebersprungen")
+skull_case(val_transformer          cases/val_transformer.skull          MATCH "Modell:   Transformer.*Val: .*VAL: true")
+skull_case(val_patience_without_val cases/val_patience_without_val.skull MATCH "'patience' wirkt nur mit Validierung")
+skull_case(val_last_loss_before_train cases/val_last_loss_before_train.skull EXIT 1 MATCH "last_loss\\(\\): es lief noch kein train")

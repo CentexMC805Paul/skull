@@ -211,10 +211,30 @@ beim Generieren immer die letzten `context` Token.
 | `batch` | 1 | Bigram: Tokens pro Update; Transformer: Sequenzen pro Update (Gradient wird gemittelt) |
 | `steps` | 0 | 0 = jede Epoche geht durch **alle** Tokens; sonst nur so viele Token-Schritte (zufällige Fenster) pro Epoche, für große Dateien |
 | `dim`, `vocab` | 64, 256 | Auch im `define model` setzbar |
+| `val` | 0.1 | Anteil der Daten (vom **Dateiende**), der nicht trainiert, sondern zum Bewerten benutzt wird; 0 = aus. Höchstens 50 000 Token; bei zu wenig Daten (< 100 Token) wird übersprungen, mit Hinweis |
+| `patience` | 0 | Early Stopping: Abbruch, wenn sich der Validierungs-Loss N Epochen nicht verbessert (0 = aus) |
 | `context` | 1 | 1 = Bigram, > 1 = Transformer mit diesem Kontext (max. 8192) |
 | `heads`, `layers` | 2, 1 | Nur Transformer. `dim` muss durch `heads` teilbar sein |
 | `bpe`, `bpe_vocab` | false, 1000 | Byte-Pair-Encoding statt Bytes als Token. Der Tokenizer wird in der Gewichte-Datei mitgespeichert, `generate` benutzt ihn automatisch |
 | `gpu`, `prefer_amd` | false | Zeigt das OpenCL-Gerät an. **Das Training läuft trotzdem auf der CPU** (Hinweis wird ausgegeben) |
+
+### Validierung: lernt das Modell wirklich?
+Der Trainings-Loss sinkt fast immer, auch wenn das Modell nur auswendig lernt. Deshalb hält Skull
+standardmäßig die letzten 10 % der Daten zurück und zeigt pro Epoche den **Val-Loss** und die
+**Perplexität** (`exp(Loss)`, grob: unter wie vielen gleich wahrscheinlichen Token das Modell
+schwankt; kleiner ist besser):
+
+```
+Epoche 10/80  |  Loss: 2.13  |  Val: 2.34 (Perplexitaet 10.4) *  |  Zeit: 15s
+```
+`*` markiert eine neue Bestleistung. Steigt der Val-Loss, während der Trainings-Loss weiter sinkt,
+ist das **Überanpassung**; Skull speichert dann die Gewichte mit dem **besten Val-Loss**
+(nicht die der letzten Epoche) und sagt, aus welcher Epoche sie stammen. Mit `patience = 5` bricht
+das Training nach 5 Epochen ohne Verbesserung ab.
+
+Im Skript lassen sich die Ergebnisse abfragen, z. B. für einen Vergleich mehrerer Läufe:
+`last_loss()` (Trainings-Loss der letzten Epoche), `last_val_loss()` (Val-Loss des gespeicherten
+Modells) und `last_best_epoch()`.
 
 Unbekannte Felder (z. B. Tippfehler) und `heads`/`layers` ohne `context > 1` werden mit einer
 Warnung gemeldet statt still ignoriert.

@@ -7,6 +7,7 @@
 #include <sstream>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <algorithm>
 #include <stdexcept>
@@ -37,14 +38,26 @@
 //  arbeiten direkt auf Vektoren (kein Autograd-Graph pro Schritt).
 //  Das haelt den Speicher konstant und die Schritte schnell.
 //
+//  Aufbau dieser Datei:
+//    TrainableModel   gemeinsame Schnittstelle (Epoche trainieren, bewerten, Gewichte holen)
+//    BigramModel, TransformerTrainer   die beiden Modelle
+//    run_training()   gemeinsamer Rahmen: Epochen, Validierung, bestes Modell, Early Stopping
+//    skull_train()    Eingaben pruefen, Daten laden/aufteilen, Modell waehlen
+//
 //  Optionen (train { ... }):
 //    data, out, epochs, rate, batch, dim, vocab, steps, context, heads, layers,
-//    bpe, bpe_vocab, gpu, prefer_amd
+//    val, patience, bpe, bpe_vocab, gpu, prefer_amd
 //  out = Pfad der Gewichte-Datei (Standard: data + ".weights").
 //  steps = 0 (Standard): jede Epoche geht durch ALLE Tokens.
 //  steps > 0: pro Epoche nur so viele Token-Schritte (zufaellige Fenster),
 //  damit bei grossen Dateien nach und nach alles gesehen wird, ohne dass
 //  eine Epoche ewig dauert.
+//  val = Anteil der Daten (vom ENDE der Datei), der nicht trainiert, sondern zum
+//  Bewerten benutzt wird (Standard 0.1; 0 = aus; hoechstens 50000 Token, der Rest
+//  wird trainiert). Mit Validierung werden die Gewichte mit dem besten
+//  Validierungs-Loss gespeichert.
+//  patience = Abbruch, wenn sich der Validierungs-Loss N Epochen lang nicht
+//  verbessert (0 = aus).
 // ============================================================
 
 inline void softmax_inplace(FlatVec& v) {
@@ -84,33 +97,236 @@ struct TrainConfig {
     std::string out_path   = "";      // Ziel der Gewichte; leer = data + ".weights"
     int         epochs     = 10;
     double      rate       = 0.001;
-    int         batch      = 1;       // Tokens pro Gewichts-Update (Gradient wird gemittelt)
+    int         batch      = 1;       // Tokens (Bigram) bzw. Sequenzen (Transformer) pro Update
     size_t      dim        = 64;
     size_t      vocab      = 256;
     size_t      steps      = 0;       // 0 = alle Tokens pro Epoche
     size_t      context    = 1;       // 1 = Bigram-Modell, > 1 = Transformer mit diesem Kontext
     size_t      heads      = 0;       // nur Transformer (0 = Standard: 2)
     size_t      layers     = 0;       // nur Transformer (0 = Standard: 1)
+    double      val        = 0.1;     // Anteil Validierungsdaten (vom Dateiende), 0 = aus
+    int         patience   = 0;       // Early Stopping nach N Epochen ohne Verbesserung, 0 = aus
     bool        use_bpe    = false;   // BPE-Tokenisierung aktivieren
     int         bpe_vocab  = 1000;    // BPE Ziel-Vokabular
     bool        use_gpu    = false;   // GPU via OpenCL (derzeit nur initialisiert)
     bool        prefer_amd = false;   // AMD GPU bevorzugen
 };
 
+// Ergebnis eines Trainings (fuer last_loss() / last_val_loss() in der Sprache)
+struct TrainResult {
+    double train_loss  = std::numeric_limits<double>::quiet_NaN();  // Trainings-Loss der letzten Epoche
+    double val_loss    = std::numeric_limits<double>::quiet_NaN();  // Validierungs-Loss des gespeicherten Modells
+    bool   has_val     = false;
+    int    best_epoch  = 0;
+    int    epochs_run  = 0;
+    bool   stopped_early = false;
+};
+
 inline std::string weights_path_for(const TrainConfig& cfg) {
     return cfg.out_path.empty() ? cfg.data_path + ".weights" : cfg.out_path;
 }
 
-// Transformer-Training: zufaellige Fenster der Laenge `context`, Adam, Mini-Batch aus mehreren Fenstern.
-inline void train_transformer(const TrainConfig& cfg, const std::vector<int>& ids,
-                              size_t vocab, const BPETokenizer* bpe) {
+// ---- gemeinsame Schnittstelle der beiden Modelle ----
+class TrainableModel {
+public:
+    virtual ~TrainableModel() = default;
+    virtual void print_info(size_t total_tokens) const = 0;
+    // Eine Epoche trainieren; liefert den mittleren Trainings-Loss (je Token).
+    virtual double train_epoch() = 0;
+    // Mittlerer Loss je Token auf ids (nur Vorwaertsrechnung).
+    virtual double evaluate(const std::vector<int>& ids) = 0;
+    // Aktuelle Gewichte inkl. Tokenizer als speicherbares Paket.
+    virtual SkullWeights export_weights() const = 0;
+};
+
+// ---- Aufteilen in Training und Validierung ----
+struct DataSplit {
+    std::vector<int> train;
+    std::vector<int> val;      // leer = keine Validierung
+    std::string      note;     // Hinweis, falls gewuenschte Validierung nicht moeglich war
+};
+
+inline DataSplit split_data(const std::vector<int>& ids, double val_fraction) {
+    DataSplit s;
+    const size_t MIN_VAL_TOKENS = 100;     // darunter ist ein Validierungs-Loss kaum aussagekraeftig
+    const size_t MAX_VAL_TOKENS = 50000;   // darueber lohnt die Genauigkeit den Rechenaufwand pro Epoche nicht
+    const size_t n = ids.size();
+    size_t n_val = (val_fraction > 0.0) ? (size_t)((double)n * val_fraction) : 0;
+    if (n_val > MAX_VAL_TOKENS) n_val = MAX_VAL_TOKENS;
+    if (val_fraction > 0.0 && (n_val < MIN_VAL_TOKENS || n - n_val < 2)) {
+        s.note = "Validierung uebersprungen: " + std::to_string(n_val) + " von " + std::to_string(n) +
+                 " Token waeren zu wenig (mindestens " + std::to_string(MIN_VAL_TOKENS) +
+                 " noetig) - es wird auf allen Daten trainiert";
+    }
+    if (n_val >= MIN_VAL_TOKENS && n - n_val >= 2) {
+        s.train.assign(ids.begin(), ids.end() - (std::ptrdiff_t)n_val);
+        s.val.assign(ids.end() - (std::ptrdiff_t)n_val, ids.end());
+    } else {
+        s.train = ids;
+    }
+    return s;
+}
+
+// ============================================================
+//  Bigram-Modell
+// ============================================================
+class BigramModel : public TrainableModel {
+public:
+    BigramModel(const TrainConfig& cfg, size_t vocab, const std::vector<int>& ids, const BPETokenizer* bpe)
+        : cfg_(cfg), ids_(ids), dim_(cfg.dim), vocab_(vocab), window_rng_(12345) {
+        n_pairs_      = ids_.size() - 1;
+        steps_per_ep_ = (cfg_.steps > 0 && cfg_.steps < n_pairs_) ? cfg_.steps : n_pairs_;
+
+        w_.dim      = dim_;
+        w_.vocab    = vocab_;
+        w_.W_embed  = xavier_init(vocab_, dim_,  42);
+        w_.W_hidden = xavier_init(dim_,   dim_,  43);
+        w_.W_out    = xavier_init(dim_,   vocab_, 44);
+        if (bpe) { w_.has_bpe = true; w_.bpe = *bpe; }
+
+        embed_.assign(dim_, 0.0); hidden_.assign(dim_, 0.0); d_pre_.assign(dim_, 0.0); d_embed_.assign(dim_, 0.0);
+        probs_.assign(vocab_, 0.0); d_logits_.assign(vocab_, 0.0);
+        use_batch_ = cfg_.batch > 1;
+        if (use_batch_) { gW_out_.assign(dim_ * vocab_, 0.0); gW_hidden_.assign(dim_ * dim_, 0.0); }
+    }
+
+    size_t param_count() const { return vocab_ * dim_ + dim_ * dim_ + dim_ * vocab_; }
+
+    void print_info(size_t total_tokens) const override {
+        std::cout << "[Skull] Modell:     Bigram (1 Token Kontext)\n";
+        std::cout << "[Skull] Tokens:     " << total_tokens << "\n";
+        std::cout << "[Skull] Vokabular:  " << vocab_ << "\n";
+        std::cout << "[Skull] Schritte/Epoche: " << steps_per_ep_ << "\n";
+        std::cout << "[Skull] Parameter:  " << param_count() << "\n\n";
+    }
+
+    double train_epoch() override {
+        double epoch_loss = 0.0;
+        size_t start = 0;
+        if (steps_per_ep_ < n_pairs_)
+            start = rng_below(window_rng_, n_pairs_ - steps_per_ep_ + 1);
+
+        for (size_t s = 0; s < steps_per_ep_; ++s) {
+            const int input_id  = ids_[start + s];
+            const int target_id = ids_[start + s + 1];
+
+            forward(input_id);
+            epoch_loss += cross_entropy(probs_, target_id);
+
+            // --- Backward (von Hand) ---
+            d_logits_ = probs_;
+            d_logits_[(size_t)target_id] -= 1.0;
+
+            for (size_t i = 0; i < dim_; ++i) {
+                if (hidden_[i] <= 0.0) { d_pre_[i] = 0.0; continue; }
+                const double* orow = &w_.W_out[i * vocab_];
+                double acc = 0.0;
+                for (size_t j = 0; j < vocab_; ++j) acc += orow[j] * d_logits_[j];
+                d_pre_[i] = acc;
+            }
+
+            std::fill(d_embed_.begin(), d_embed_.end(), 0.0);
+            for (size_t i = 0; i < dim_; ++i) {
+                const double dp = d_pre_[i];
+                if (dp == 0.0) continue;
+                const double* hrow = &w_.W_hidden[i * dim_];
+                for (size_t j = 0; j < dim_; ++j) d_embed_[j] += hrow[j] * dp;
+            }
+
+            // --- Update (SGD) ---
+            if (!use_batch_) {
+                outer_add(w_.W_out,    vocab_, hidden_, d_logits_, -cfg_.rate);
+                outer_add(w_.W_hidden, dim_,   d_pre_,  embed_,    -cfg_.rate);
+                double* row = &w_.W_embed[(size_t)input_id * dim_];
+                for (size_t d = 0; d < dim_; ++d) row[d] -= cfg_.rate * d_embed_[d];
+            } else {
+                outer_add(gW_out_,    vocab_, hidden_, d_logits_, 1.0);
+                outer_add(gW_hidden_, dim_,   d_pre_,  embed_,    1.0);
+                FlatVec& g = gEmbed_[input_id];
+                if (g.empty()) g.assign(dim_, 0.0);
+                for (size_t d = 0; d < dim_; ++d) g[d] += d_embed_[d];
+                if (++in_batch_ == cfg_.batch) flush_batch();
+            }
+        }
+        flush_batch();   // Rest-Batch am Epochenende
+        return epoch_loss / (double)steps_per_ep_;
+    }
+
+    double evaluate(const std::vector<int>& v) override {
+        if (v.size() < 2) return std::numeric_limits<double>::quiet_NaN();
+        double total = 0.0;
+        for (size_t i = 0; i + 1 < v.size(); ++i) {
+            forward(v[i]);
+            total += cross_entropy(probs_, v[i + 1]);
+        }
+        return total / (double)(v.size() - 1);
+    }
+
+    SkullWeights export_weights() const override { return w_; }
+
+private:
+    // Vorwaerts fuer ein Eingabe-Token; Ergebnis: probs_ (Softmax), hidden_, embed_
+    void forward(int input_id) {
+        const double* erow = &w_.W_embed[(size_t)input_id * dim_];
+        for (size_t d = 0; d < dim_; ++d) embed_[d] = erow[d];
+
+        for (size_t i = 0; i < dim_; ++i) {
+            const double* hrow = &w_.W_hidden[i * dim_];
+            double pre = 0.0;
+            for (size_t j = 0; j < dim_; ++j) pre += hrow[j] * embed_[j];
+            hidden_[i] = pre > 0.0 ? pre : 0.0;
+        }
+
+        std::fill(probs_.begin(), probs_.end(), 0.0);   // probs_ dient zuerst als Logits
+        for (size_t i = 0; i < dim_; ++i) {
+            const double h = hidden_[i];
+            if (h == 0.0) continue;
+            const double* orow = &w_.W_out[i * vocab_];
+            for (size_t j = 0; j < vocab_; ++j) probs_[j] += h * orow[j];
+        }
+        softmax_inplace(probs_);
+    }
+
+    void flush_batch() {
+        if (in_batch_ == 0) return;
+        const double s = cfg_.rate / (double)in_batch_;
+        for (size_t k = 0; k < gW_out_.size(); ++k)    w_.W_out[k]    -= s * gW_out_[k];
+        for (size_t k = 0; k < gW_hidden_.size(); ++k) w_.W_hidden[k] -= s * gW_hidden_[k];
+        for (auto& kv : gEmbed_) {
+            double* row = &w_.W_embed[(size_t)kv.first * dim_];
+            for (size_t d = 0; d < dim_; ++d) row[d] -= s * kv.second[d];
+        }
+        std::fill(gW_out_.begin(), gW_out_.end(), 0.0);
+        std::fill(gW_hidden_.begin(), gW_hidden_.end(), 0.0);
+        gEmbed_.clear();
+        in_batch_ = 0;
+    }
+
+    TrainConfig cfg_;
+    const std::vector<int>& ids_;
+    size_t dim_, vocab_;
+    size_t n_pairs_ = 0, steps_per_ep_ = 0;
+    SkullWeights w_;
+    FlatVec embed_, hidden_, d_pre_, d_embed_, probs_, d_logits_;
+    bool use_batch_ = false;
+    FlatVec gW_out_, gW_hidden_;
+    std::unordered_map<int, FlatVec> gEmbed_;
+    int in_batch_ = 0;
+    std::mt19937 window_rng_;
+};
+
+// ============================================================
+//  Transformer
+// ============================================================
+
+// Prueft die Eingaben und baut die Modellkonfiguration. n_pairs = Trainingspaare.
+inline TransformerConfig make_transformer_config(const TrainConfig& cfg, size_t vocab, size_t n_pairs) {
     using namespace weights_detail;
     if (cfg.context > MAX_CONTEXT)
         throw std::runtime_error("train: 'context' darf hoechstens " + std::to_string(MAX_CONTEXT) + " sein");
     if (cfg.layers > MAX_LAYERS)
         throw std::runtime_error("train: 'layers' darf hoechstens " + std::to_string(MAX_LAYERS) + " sein");
 
-    const size_t n_pairs = ids.size() - 1;
     TransformerConfig tc;
     tc.vocab   = vocab;
     tc.dim     = cfg.dim;
@@ -124,85 +340,184 @@ inline void train_transformer(const TrainConfig& cfg, const std::vector<int>& id
     }
     if (tc.context < cfg.context)
         std::cout << "[Skull] Hinweis: context wurde auf " << tc.context
-                  << " reduziert (die Daten haben nur " << n_pairs << " Trainingspaare)\n";
+                  << " reduziert (die Trainingsdaten haben nur " << n_pairs << " Trainingspaare)\n";
 
     const size_t n_params = tc.param_count();
     const size_t MAX_PARAMS = 200u * 1000u * 1000u;
     if (n_params > MAX_PARAMS)
         throw std::runtime_error("train: Modell zu gross (" + std::to_string(n_params) +
                                  " Parameter, maximal " + std::to_string(MAX_PARAMS) + ")");
+    return tc;
+}
 
-    const size_t T                = tc.context;
-    const size_t pairs_per_epoch  = (cfg.steps > 0 && cfg.steps < n_pairs) ? cfg.steps : n_pairs;
-    const size_t seqs_per_epoch   = (pairs_per_epoch + T - 1) / T;
-    const size_t batch            = (size_t)cfg.batch;
-    const size_t updates_per_epoch = (seqs_per_epoch + batch - 1) / batch;
+// Zufaellige Fenster der Laenge `context`, Adam, Mini-Batch aus mehreren Fenstern.
+class TransformerTrainer : public TrainableModel {
+public:
+    TransformerTrainer(const TrainConfig& cfg, const TransformerConfig& tc,
+                       const std::vector<int>& ids, const BPETokenizer* bpe)
+        : cfg_(cfg), tc_(tc), ids_(ids), model_(tc),
+          opt_(tc.param_count(), cfg.rate, 1.0), rng_(12345) {
+        model_.init(42);
+        n_pairs_ = ids_.size() - 1;
+        T_       = tc_.context;
+        const size_t pairs_per_epoch = (cfg_.steps > 0 && cfg_.steps < n_pairs_) ? cfg_.steps : n_pairs_;
+        seqs_per_epoch_    = (pairs_per_epoch + T_ - 1) / T_;
+        batch_             = (size_t)cfg_.batch;
+        updates_per_epoch_ = (seqs_per_epoch_ + batch_ - 1) / batch_;
+        total_updates_     = (size_t)cfg_.epochs * updates_per_epoch_;
+        if (bpe) { has_bpe_ = true; bpe_ = *bpe; }
+    }
 
-    std::cout << "[Skull] Modell:     Transformer (" << tc.layers << " Schicht(en), " << tc.heads
-              << " Kopf/Koepfe, Kontext " << T << ")\n";
-    std::cout << "[Skull] Tokens:     " << ids.size() << "\n";
-    std::cout << "[Skull] Vokabular:  " << vocab << "\n";
-    std::cout << "[Skull] Sequenzen/Epoche: " << seqs_per_epoch << " (je " << T << " Token), "
-              << updates_per_epoch << " Update(s)\n";
-    std::cout << "[Skull] Parameter:  " << n_params << "\n\n";
+    void print_info(size_t total_tokens) const override {
+        std::cout << "[Skull] Modell:     Transformer (" << tc_.layers << " Schicht(en), " << tc_.heads
+                  << " Kopf/Koepfe, Kontext " << T_ << ")\n";
+        std::cout << "[Skull] Tokens:     " << total_tokens << "\n";
+        std::cout << "[Skull] Vokabular:  " << tc_.vocab << "\n";
+        std::cout << "[Skull] Sequenzen/Epoche: " << seqs_per_epoch_ << " (je " << T_ << " Token), "
+                  << updates_per_epoch_ << " Update(s)\n";
+        std::cout << "[Skull] Parameter:  " << tc_.param_count() << "\n\n";
+    }
 
-    Transformer model(tc);
-    model.init(42);
-    Adam opt(model.params.size(), cfg.rate, 1.0);
-    const size_t total_updates = (size_t)cfg.epochs * updates_per_epoch;
-    size_t update_no = 0;
-    std::mt19937 rng(12345);
-    auto t_start = std::chrono::high_resolution_clock::now();
-
-    for (int epoch = 1; epoch <= cfg.epochs; ++epoch) {
+    double train_epoch() override {
         double epoch_loss = 0.0;
         size_t seqs_done = 0;
-        for (size_t u = 0; u < updates_per_epoch; ++u) {
-            const size_t n_in = std::min(batch, seqs_per_epoch - seqs_done);
-            model.zero_grads();
+        for (size_t u = 0; u < updates_per_epoch_; ++u) {
+            const size_t n_in = std::min(batch_, seqs_per_epoch_ - seqs_done);
+            model_.zero_grads();
             for (size_t b = 0; b < n_in; ++b) {
-                const size_t s = rng_below(rng, n_pairs - T + 1);
-                epoch_loss += model.step_loss_and_grad(&ids[s], &ids[s + 1], T);
+                const size_t s = rng_below(rng_, n_pairs_ - T_ + 1);
+                epoch_loss += model_.step_loss_and_grad(&ids_[s], &ids_[s + 1], T_);
             }
             if (n_in > 1) {
                 const double inv = 1.0 / (double)n_in;
-                for (auto& g : model.grads) g *= inv;
+                for (auto& g : model_.grads) g *= inv;
             }
-            opt.step(model.params, model.grads, lr_schedule(update_no++, total_updates));
+            opt_.step(model_.params, model_.grads, lr_schedule(update_no_++, total_updates_));
             seqs_done += n_in;
         }
-        const double avg_loss = epoch_loss / (double)seqs_done;
-        if (!std::isfinite(avg_loss))
+        return epoch_loss / (double)seqs_done;
+    }
+
+    // Aufeinanderfolgende Fenster der Laenge `context` (ohne Ueberlappung); jedes Token
+    // wird mit hoechstens `context` vorigen Token vorhergesagt.
+    double evaluate(const std::vector<int>& v) override {
+        if (v.size() < 2) return std::numeric_limits<double>::quiet_NaN();
+        double total = 0.0;
+        size_t count = 0;
+        for (size_t start = 0; start + 1 < v.size(); start += T_) {
+            const size_t len = std::min(T_, v.size() - 1 - start);
+            model_.forward(&v[start], len);
+            total += model_.loss(&v[start + 1], len) * (double)len;
+            count += len;
+        }
+        return total / (double)count;
+    }
+
+    SkullWeights export_weights() const override {
+        SkullWeights w;
+        w.is_transformer = true;
+        w.tcfg    = tc_;
+        w.dim     = tc_.dim;
+        w.vocab   = tc_.vocab;
+        w.tparams = model_.params;
+        if (has_bpe_) { w.has_bpe = true; w.bpe = bpe_; }
+        return w;
+    }
+
+private:
+    TrainConfig cfg_;
+    TransformerConfig tc_;
+    const std::vector<int>& ids_;
+    Transformer model_;
+    Adam opt_;
+    std::mt19937 rng_;
+    size_t n_pairs_ = 0, T_ = 0, seqs_per_epoch_ = 0, batch_ = 1, updates_per_epoch_ = 0;
+    size_t total_updates_ = 0, update_no_ = 0;
+    bool has_bpe_ = false;
+    BPETokenizer bpe_;
+};
+
+// ============================================================
+//  Gemeinsamer Trainingsrahmen
+// ============================================================
+inline double perplexity(double loss) { return std::exp(loss); }
+
+inline TrainResult run_training(const TrainConfig& cfg, TrainableModel& model,
+                                const std::vector<int>& val_ids, const std::string& weights_path) {
+    using clock = std::chrono::high_resolution_clock;
+    const bool has_val = val_ids.size() >= 2;
+    TrainResult res;
+    res.has_val = has_val;
+
+    double best_val = std::numeric_limits<double>::infinity();
+    int    best_epoch = 0, bad_epochs = 0;
+    SkullWeights best;
+    auto t_start = clock::now();
+    auto seconds = [&]() { return std::chrono::duration<double>(clock::now() - t_start).count(); };
+
+    for (int epoch = 1; epoch <= cfg.epochs; ++epoch) {
+        const double loss = model.train_epoch();
+        if (!std::isfinite(loss))
             throw std::runtime_error(
                 "train: Loss ist nicht endlich (Training divergiert) - 'rate' verkleinern");
+        res.train_loss = loss;
+        res.epochs_run = epoch;
+
+        bool improved = false;
+        double v = std::numeric_limits<double>::quiet_NaN();
+        if (has_val) {
+            v = model.evaluate(val_ids);
+            if (!std::isfinite(v))
+                throw std::runtime_error(
+                    "train: Validierungs-Loss ist nicht endlich (Training divergiert) - 'rate' verkleinern");
+            if (v < best_val) {
+                best_val = v; best_epoch = epoch; bad_epochs = 0; improved = true;
+                best = model.export_weights();
+            } else {
+                ++bad_epochs;
+            }
+        }
 
         if (epoch == 1 || epoch % 10 == 0 || epoch == cfg.epochs) {
-            double secs = std::chrono::duration<double>(
-                std::chrono::high_resolution_clock::now() - t_start).count();
-            std::cout << "Epoche " << epoch << "/" << cfg.epochs
-                      << "  |  Loss: " << avg_loss
-                      << "  |  Zeit: " << secs << "s\n";
+            std::cout << "Epoche " << epoch << "/" << cfg.epochs << "  |  Loss: " << loss;
+            if (has_val)
+                std::cout << "  |  Val: " << v << " (Perplexitaet " << perplexity(v) << ")"
+                          << (improved ? " *" : "");
+            std::cout << "  |  Zeit: " << seconds() << "s\n";
+        }
+
+        if (has_val && cfg.patience > 0 && bad_epochs >= cfg.patience && epoch < cfg.epochs) {
+            std::cout << "[Skull] Early Stopping nach Epoche " << epoch << ": seit " << bad_epochs
+                      << " Epochen keine Verbesserung auf den Validierungsdaten\n";
+            res.stopped_early = true;
+            break;
         }
     }
 
-    double total = std::chrono::duration<double>(
-        std::chrono::high_resolution_clock::now() - t_start).count();
-    std::cout << "\n[Skull] Training abgeschlossen! " << total << "s\n";
-    std::cout << "[Skull] Parameter: " << n_params << "\n";
+    std::cout << "\n[Skull] Training abgeschlossen! " << seconds() << "s\n";
 
-    SkullWeights w;
-    w.is_transformer = true;
-    w.tcfg   = tc;
-    w.dim    = tc.dim;
-    w.vocab  = tc.vocab;
-    w.tparams = model.params;
-    if (bpe) { w.has_bpe = true; w.bpe = *bpe; }
-    std::string wp = weights_path_for(cfg);
-    save_weights(wp, w);
-    std::cout << "[Skull] Gewichte gespeichert: " << wp << "\n\n";
+    SkullWeights final_w;
+    if (has_val) {
+        res.val_loss   = best_val;
+        res.best_epoch = best_epoch;
+        final_w        = std::move(best);
+        std::cout << "[Skull] Beste Validierung: Epoche " << best_epoch << ", Val-Loss " << best_val
+                  << " (Perplexitaet " << perplexity(best_val) << ") - diese Gewichte werden gespeichert\n";
+        if (best_epoch < res.epochs_run)
+            std::cout << "[Skull] Hinweis: Nach Epoche " << best_epoch
+                      << " wurde das Modell auf den Validierungsdaten schlechter (Ueberanpassung). "
+                         "Weniger Epochen, mehr Daten oder ein kleineres Modell helfen.\n";
+    } else {
+        res.best_epoch = res.epochs_run;
+        final_w        = model.export_weights();
+    }
+
+    save_weights(weights_path, final_w);
+    std::cout << "[Skull] Gewichte gespeichert: " << weights_path << "\n\n";
+    return res;
 }
 
-inline void skull_train(const TrainConfig& cfg) {
+inline TrainResult skull_train(const TrainConfig& cfg) {
     // ---- Eingaben pruefen ----
     if (cfg.data_path.empty())
         throw std::runtime_error("train: 'data' fehlt (Pfad zur Trainingsdatei als String)");
@@ -218,9 +533,15 @@ inline void skull_train(const TrainConfig& cfg) {
         throw std::runtime_error("train: 'vocab' muss zwischen 1 und 16777216 liegen");
     if (cfg.context < 1)
         throw std::runtime_error("train: 'context' muss >= 1 sein (1 = Bigram, > 1 = Transformer)");
+    if (!(cfg.val >= 0.0 && cfg.val <= 0.5))
+        throw std::runtime_error("train: 'val' muss zwischen 0 und 0.5 liegen (Anteil der Daten, 0 = keine Validierung)");
+    if (cfg.patience < 0)
+        throw std::runtime_error("train: 'patience' muss >= 0 sein (0 = aus)");
     if (cfg.context <= 1 && (cfg.heads != 0 || cfg.layers != 0))
         std::cout << "[WARNUNG] 'heads' und 'layers' wirken nur mit context > 1 (Transformer); "
                      "ohne context trainiert Skull das Bigram-Modell\n";
+    if (cfg.patience > 0 && cfg.val <= 0.0)
+        std::cout << "[WARNUNG] 'patience' wirkt nur mit Validierung (val > 0)\n";
 
     std::cout << "\n";
     std::cout << "========================================\n";
@@ -252,7 +573,6 @@ inline void skull_train(const TrainConfig& cfg) {
     // ---- Daten laden und tokenisieren ----
     auto tok_result = skull_tokenize_file(cfg.data_path, cfg.use_bpe, cfg.bpe_vocab);
     const size_t vocab = cfg.use_bpe ? (size_t)tok_result.vocab_size : cfg.vocab;
-    const size_t dim   = cfg.dim;
 
     if (tok_result.tokens.size() < 2)
         throw std::runtime_error("train: mindestens 2 Tokens noetig, gefunden: " +
@@ -268,149 +588,23 @@ inline void skull_train(const TrainConfig& cfg) {
         std::cout << "[Skull] Hinweis: " << clipped << " Tokens lagen ausserhalb von vocab="
                   << vocab << " und wurden auf ID 0 abgebildet\n";
 
+    // ---- Training / Validierung trennen ----
+    DataSplit split = split_data(ids, cfg.val);
+    if (!split.note.empty())
+        std::cout << "[Skull] Hinweis: " << split.note << "\n";
+    if (!split.val.empty())
+        std::cout << "[Skull] Validierung: " << split.val.size() << " Token (" << (int)(cfg.val * 100.0 + 0.5)
+                  << " % vom Dateiende), Training: " << split.train.size() << " Token\n";
+
+    const BPETokenizer* bpe = cfg.use_bpe ? &tok_result.bpe : nullptr;
+    std::unique_ptr<TrainableModel> model;
     if (cfg.context > 1) {
-        train_transformer(cfg, ids, vocab, cfg.use_bpe ? &tok_result.bpe : nullptr);
-        return;
+        TransformerConfig tc = make_transformer_config(cfg, vocab, split.train.size() - 1);
+        model = std::make_unique<TransformerTrainer>(cfg, tc, split.train, bpe);
+    } else {
+        model = std::make_unique<BigramModel>(cfg, vocab, split.train, bpe);
     }
+    model->print_info(ids.size());
 
-    const size_t n_pairs        = ids.size() - 1;
-    const size_t steps_per_ep   = (cfg.steps > 0 && cfg.steps < n_pairs) ? cfg.steps : n_pairs;
-    const size_t params         = vocab * dim + dim * dim + dim * vocab;
-
-    std::cout << "[Skull] Modell:     Bigram (1 Token Kontext)\n";
-    std::cout << "[Skull] Tokens:     " << ids.size() << "\n";
-    std::cout << "[Skull] Vokabular:  " << vocab << "\n";
-    std::cout << "[Skull] Schritte/Epoche: " << steps_per_ep << "\n";
-    std::cout << "[Skull] Parameter:  " << params << "\n\n";
-
-    // ---- Gewichte ----
-    SkullWeights w;
-    w.dim      = dim;
-    w.vocab    = vocab;
-    w.W_embed  = xavier_init(vocab, dim,  42);
-    w.W_hidden = xavier_init(dim,   dim,  43);
-    w.W_out    = xavier_init(dim,   vocab, 44);
-    if (cfg.use_bpe) { w.has_bpe = true; w.bpe = tok_result.bpe; }
-
-    // Arbeitsvektoren (einmal angelegt, jeder Schritt nutzt sie wieder)
-    FlatVec embed(dim), hidden(dim), d_pre(dim), d_embed(dim);
-    FlatVec probs(vocab), d_logits(vocab);
-
-    // Mini-Batch-Akkumulation (nur bei batch > 1 genutzt)
-    const bool use_batch = cfg.batch > 1;
-    FlatVec gW_out, gW_hidden;
-    std::unordered_map<int, FlatVec> gEmbed;
-    if (use_batch) { gW_out.assign(dim * vocab, 0.0); gW_hidden.assign(dim * dim, 0.0); }
-    int in_batch = 0;
-
-    auto flush_batch = [&]() {
-        if (in_batch == 0) return;
-        const double s = cfg.rate / (double)in_batch;
-        for (size_t k = 0; k < gW_out.size(); ++k)    w.W_out[k]    -= s * gW_out[k];
-        for (size_t k = 0; k < gW_hidden.size(); ++k) w.W_hidden[k] -= s * gW_hidden[k];
-        for (auto& kv : gEmbed) {
-            double* row = &w.W_embed[(size_t)kv.first * dim];
-            for (size_t d = 0; d < dim; ++d) row[d] -= s * kv.second[d];
-        }
-        std::fill(gW_out.begin(), gW_out.end(), 0.0);
-        std::fill(gW_hidden.begin(), gW_hidden.end(), 0.0);
-        gEmbed.clear();
-        in_batch = 0;
-    };
-
-    std::mt19937 window_rng(12345);
-    auto t_start = std::chrono::high_resolution_clock::now();
-
-    for (int epoch = 1; epoch <= cfg.epochs; ++epoch) {
-        double epoch_loss = 0.0;
-        size_t start = 0;
-        if (steps_per_ep < n_pairs)
-            start = rng_below(window_rng, n_pairs - steps_per_ep + 1);
-
-        for (size_t s = 0; s < steps_per_ep; ++s) {
-            const int input_id  = ids[start + s];
-            const int target_id = ids[start + s + 1];
-
-            // --- Forward ---
-            const double* erow = &w.W_embed[(size_t)input_id * dim];
-            for (size_t d = 0; d < dim; ++d) embed[d] = erow[d];
-
-            for (size_t i = 0; i < dim; ++i) {
-                const double* hrow = &w.W_hidden[i * dim];
-                double pre = 0.0;
-                for (size_t j = 0; j < dim; ++j) pre += hrow[j] * embed[j];
-                hidden[i] = pre > 0.0 ? pre : 0.0;
-            }
-
-            std::fill(probs.begin(), probs.end(), 0.0);   // probs dient zuerst als Logits
-            for (size_t i = 0; i < dim; ++i) {
-                const double h = hidden[i];
-                if (h == 0.0) continue;
-                const double* orow = &w.W_out[i * vocab];
-                for (size_t j = 0; j < vocab; ++j) probs[j] += h * orow[j];
-            }
-            softmax_inplace(probs);
-            epoch_loss += cross_entropy(probs, target_id);
-
-            // --- Backward (von Hand) ---
-            d_logits = probs;
-            d_logits[(size_t)target_id] -= 1.0;
-
-            for (size_t i = 0; i < dim; ++i) {
-                if (hidden[i] <= 0.0) { d_pre[i] = 0.0; continue; }
-                const double* orow = &w.W_out[i * vocab];
-                double acc = 0.0;
-                for (size_t j = 0; j < vocab; ++j) acc += orow[j] * d_logits[j];
-                d_pre[i] = acc;
-            }
-
-            std::fill(d_embed.begin(), d_embed.end(), 0.0);
-            for (size_t i = 0; i < dim; ++i) {
-                const double dp = d_pre[i];
-                if (dp == 0.0) continue;
-                const double* hrow = &w.W_hidden[i * dim];
-                for (size_t j = 0; j < dim; ++j) d_embed[j] += hrow[j] * dp;
-            }
-
-            // --- Update (SGD) ---
-            if (!use_batch) {
-                outer_add(w.W_out,    vocab, hidden, d_logits, -cfg.rate);
-                outer_add(w.W_hidden, dim,   d_pre,  embed,    -cfg.rate);
-                double* row = &w.W_embed[(size_t)input_id * dim];
-                for (size_t d = 0; d < dim; ++d) row[d] -= cfg.rate * d_embed[d];
-            } else {
-                outer_add(gW_out,    vocab, hidden, d_logits, 1.0);
-                outer_add(gW_hidden, dim,   d_pre,  embed,    1.0);
-                FlatVec& g = gEmbed[input_id];
-                if (g.empty()) g.assign(dim, 0.0);
-                for (size_t d = 0; d < dim; ++d) g[d] += d_embed[d];
-                if (++in_batch == cfg.batch) flush_batch();
-            }
-        }
-        flush_batch();   // Rest-Batch am Epochenende
-
-        double avg_loss = epoch_loss / (double)steps_per_ep;
-        if (!std::isfinite(avg_loss))
-            throw std::runtime_error(
-                "train: Loss ist nicht endlich (Training divergiert) - 'rate' verkleinern");
-
-        if (epoch == 1 || epoch % 10 == 0 || epoch == cfg.epochs) {
-            double secs = std::chrono::duration<double>(
-                std::chrono::high_resolution_clock::now() - t_start).count();
-            std::cout << "Epoche " << epoch << "/" << cfg.epochs
-                      << "  |  Loss: " << avg_loss
-                      << "  |  Zeit: " << secs << "s\n";
-        }
-    }
-
-    double total = std::chrono::duration<double>(
-        std::chrono::high_resolution_clock::now() - t_start).count();
-
-    std::cout << "\n[Skull] Training abgeschlossen! " << total << "s\n";
-    std::cout << "[Skull] Parameter: " << params << "\n";
-
-    // ---- Gewichte speichern ----
-    std::string wp = weights_path_for(cfg);
-    save_weights(wp, w);
-    std::cout << "[Skull] Gewichte gespeichert: " << wp << "\n\n";
+    return run_training(cfg, *model, split.val, weights_path_for(cfg));
 }
