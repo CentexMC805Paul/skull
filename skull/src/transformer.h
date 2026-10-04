@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <algorithm>
+#include <functional>
 #include "rng.h"
 
 // ============================================================
@@ -104,44 +105,64 @@ public:
 
     void zero_grads() { std::fill(grads.begin(), grads.end(), 0.0); }
 
-    // Vorwaerts: Logits [t x vocab] fuer die Token-IDs ids[0..t-1].
-    // Merkt sich die Zwischenwerte fuer backward().
-    const std::vector<double>& forward(const int* ids, size_t t);
+    // Arbeitsspeicher eines Vorwaerts-/Rueckwaerts-Durchlaufs (Zwischenwerte). Jeder Thread braucht
+    // einen eigenen; die Parameter (params) werden von allen nur gelesen.
+    struct Workspace {
+        struct Layer {
+            std::vector<double> x_in;                  // [t x d]
+            std::vector<double> xn1, mean1, rstd1;     // LN1: normierte Ausgabe (ohne gamma/beta), Statistik
+            std::vector<double> ln1;                   // LN1-Ausgabe mit gamma/beta
+            std::vector<double> q, k, v;               // [t x d]
+            std::vector<double> att;                   // [heads x t x t] Softmax-Wahrscheinlichkeiten
+            std::vector<double> ctx;                   // [t x d] Attention-Ergebnis vor Wo
+            std::vector<double> x_mid;                 // [t x d]
+            std::vector<double> xn2, mean2, rstd2, ln2;
+            std::vector<double> h_pre;                 // [t x ff] vor GELU
+            std::vector<double> h_act;                 // [t x ff] nach GELU
+            std::vector<double> h_tanh;                // [t x ff] tanh-Anteil der GELU (im Backward wiederverwendet)
+        };
+        std::vector<Layer> layers;
+        std::vector<double> x_last;                    // Ausgabe der letzten Schicht [t x d]
+        std::vector<double> xnf, meanf, rstdf, lnf;
+        std::vector<double> logits, dlogits;
+        size_t t_cur = 0;
+    };
 
-    // Verlust (mittlere Kreuzentropie) fuer targets[0..t-1] auf den zuletzt berechneten
-    // Logits, und Gradient d(Verlust)/d(Logits) in dlogits_ (fuer backward()).
-    double loss(const int* targets, size_t t);
+    // Vorwaerts: Logits [t x vocab] fuer die Token-IDs ids[0..t-1]; merkt sich die Zwischenwerte in ws.
+    const std::vector<double>& forward(const int* ids, size_t t, Workspace& ws) const;
 
-    // Rueckwaerts: addiert d(Verlust)/d(params) auf grads. Nur nach forward() + loss().
-    void backward(const int* ids, size_t t);
+    // Verlust (mittlere Kreuzentropie) fuer targets[0..t-1] auf den zuletzt berechneten Logits von ws;
+    // legt d(Verlust)/d(Logits) in ws ab.
+    double loss(const int* targets, size_t t, Workspace& ws) const;
 
-    // Kombination: Verlust fuer eine Sequenz berechnen und Gradienten AUFADDIEREN.
+    // Rueckwaerts: ADDIERT d(Verlust)/d(params) auf g (Vektor der Laenge param_count()).
+    // Nur nach forward() + loss() mit demselben ws.
+    void backward(const int* ids, size_t t, Workspace& ws, double* g) const;
+
+    // Bequeme Varianten mit einem eigenen Workspace im Objekt und den Gradienten in `grads`
+    // (nicht fuer mehrere Threads gleichzeitig).
+    const std::vector<double>& forward(const int* ids, size_t t) { return forward(ids, t, ws_); }
+    double loss(const int* targets, size_t t) { return loss(targets, t, ws_); }
+    void backward(const int* ids, size_t t) { backward(ids, t, ws_, grads.data()); }
+
+    // Verlust fuer eine Sequenz berechnen und Gradienten in `grads` AUFADDIEREN.
     double step_loss_and_grad(const int* ids, const int* targets, size_t t) {
-        forward(ids, t);
-        double l = loss(targets, t);
-        backward(ids, t);
+        forward(ids, t, ws_);
+        double l = loss(targets, t, ws_);
+        backward(ids, t, ws_, grads.data());
+        return l;
+    }
+
+    // Wie step_loss_and_grad, aber mit explizitem Workspace und Gradientenpuffer (thread-tauglich).
+    double step_loss_and_grad(const int* ids, const int* targets, size_t t, Workspace& ws, double* g) const {
+        forward(ids, t, ws);
+        double l = loss(targets, t, ws);
+        backward(ids, t, ws, g);
         return l;
     }
 
 private:
-    // ---- Zwischenwerte (pro Schicht) ----
-    struct LayerCache {
-        std::vector<double> x_in;                  // [t x d]
-        std::vector<double> xn1, mean1, rstd1;     // LN1: Ausgabe (normiert, ohne gamma/beta), Statistik
-        std::vector<double> ln1;                   // LN1-Ausgabe mit gamma/beta
-        std::vector<double> q, k, v;               // [t x d]
-        std::vector<double> att;                   // [heads x t x t] Softmax-Wahrscheinlichkeiten
-        std::vector<double> ctx;                   // [t x d] Attention-Ergebnis vor Wo
-        std::vector<double> x_mid;                 // [t x d]
-        std::vector<double> xn2, mean2, rstd2, ln2;
-        std::vector<double> h_pre;                 // [t x ff] vor GELU
-        std::vector<double> h_act;                 // [t x ff] nach GELU
-    };
-    std::vector<LayerCache> cache_;
-    std::vector<double> x_last_;                   // Ausgabe der letzten Schicht [t x d]
-    std::vector<double> xnf_, meanf_, rstdf_, lnf_;
-    std::vector<double> logits_, dlogits_;
-    size_t t_cur_ = 0;
+    Workspace ws_;
 
     static constexpr double LN_EPS = 1e-5;
 
@@ -179,29 +200,61 @@ private:
             }
         }
     }
+    // Skalarprodukt mit 16 festen Teilsummen. Die Summationsreihenfolge ist vorgegeben (daher auf
+    // jedem System gleich), der Compiler darf die 16 Teilsummen aber auf SIMD-Register verteilen.
+    // Eine einfache Schleife `acc += a[j]*b[j]` bleibt dagegen skalar: ohne -ffast-math darf der
+    // Compiler Gleitkomma-Summen nicht umordnen (gemessen: 3-4 statt 12-15 GFLOP/s).
+    static inline double dot(const double* a, const double* b, size_t n) {
+        double s[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+        size_t j = 0;
+        for (; j + 16 <= n; j += 16)
+            for (int l = 0; l < 16; ++l) s[l] += a[j + l] * b[j + l];
+        double tail = 0.0;
+        for (; j < n; ++j) tail += a[j] * b[j];
+        const double r0 = (s[0]  + s[1])  + (s[2]  + s[3]);
+        const double r1 = (s[4]  + s[5])  + (s[6]  + s[7]);
+        const double r2 = (s[8]  + s[9])  + (s[10] + s[11]);
+        const double r3 = (s[12] + s[13]) + (s[14] + s[15]);
+        return ((r0 + r1) + (r2 + r3)) + tail;
+    }
+
     // Rueckwaerts zu linear: dW += X^T dY, db += sum(dY), dX (+)= dY W^T  (dX darf nullptr sein)
     static void linear_back(const double* X, const double* W, const double* dY,
                             double* dW, double* db, double* dX,
                             size_t t, size_t in, size_t out) {
-        for (size_t i = 0; i < t; ++i) {
+        if (db)
+            for (size_t i = 0; i < t; ++i) {
+                const double* dy = dY + i * out;
+                for (size_t j = 0; j < out; ++j) db[j] += dy[j];
+            }
+        // dW += X^T dY: je 4 Zeilen von dY auf einmal, dW wird so 4x seltener geladen/gespeichert
+        size_t i = 0;
+        for (; i + 4 <= t; i += 4) {
+            const double *dy0 = dY + i * out, *dy1 = dy0 + out, *dy2 = dy1 + out, *dy3 = dy2 + out;
+            const double *x0 = X + i * in, *x1 = x0 + in, *x2 = x1 + in, *x3 = x2 + in;
+            for (size_t k = 0; k < in; ++k) {
+                const double a0 = x0[k], a1 = x1[k], a2 = x2[k], a3 = x3[k];
+                double* dw = dW + k * out;
+                for (size_t j = 0; j < out; ++j)
+                    dw[j] += (a0 * dy0[j] + a1 * dy1[j]) + (a2 * dy2[j] + a3 * dy3[j]);
+            }
+        }
+        for (; i < t; ++i) {
             const double* dy = dY + i * out;
             const double* x  = X + i * in;
-            if (db) for (size_t j = 0; j < out; ++j) db[j] += dy[j];
             for (size_t k = 0; k < in; ++k) {
                 const double xv = x[k];
                 double* dw = dW + k * out;
                 for (size_t j = 0; j < out; ++j) dw[j] += xv * dy[j];
             }
-            if (dX) {
-                double* dx = dX + i * in;
-                for (size_t k = 0; k < in; ++k) {
-                    const double* w = W + k * out;
-                    double acc = 0.0;
-                    for (size_t j = 0; j < out; ++j) acc += dy[j] * w[j];
-                    dx[k] += acc;
-                }
-            }
         }
+        // dX += dY W^T: Skalarprodukte (Zeile von dY mit Zeile von W)
+        if (dX)
+            for (size_t r = 0; r < t; ++r) {
+                const double* dy = dY + r * out;
+                double* dx = dX + r * in;
+                for (size_t k = 0; k < in; ++k) dx[k] += dot(dy, W + k * out, out);
+            }
     }
 
     // LayerNorm pro Zeile: xn = (x-mean)*rstd; y = gamma*xn + beta
@@ -249,26 +302,26 @@ private:
         }
     }
 
-    // GELU (tanh-Naeherung) und Ableitung
-    static double gelu(double x) {
+    // GELU (tanh-Naeherung) und Ableitung. gelu() liefert zusaetzlich tanh(u), damit das
+    // Backward es nicht noch einmal berechnen muss (tanh kostet ~14 ns pro Aufruf).
+    static double gelu(double x, double& th) {
         const double c = 0.7978845608028654;     // sqrt(2/pi)
-        double u = c * (x + 0.044715 * x * x * x);
-        return 0.5 * x * (1.0 + std::tanh(u));
+        const double u = c * (x + 0.044715 * x * x * x);
+        th = std::tanh(u);
+        return 0.5 * x * (1.0 + th);
     }
-    static double gelu_grad(double x) {
+    static double gelu_grad(double x, double th) {
         const double c = 0.7978845608028654;
-        double u = c * (x + 0.044715 * x * x * x);
-        double th = std::tanh(u);
         return 0.5 * (1.0 + th) + 0.5 * x * (1.0 - th * th) * c * (1.0 + 3.0 * 0.044715 * x * x);
     }
 };
 
-inline const std::vector<double>& Transformer::forward(const int* ids, size_t t) {
+inline const std::vector<double>& Transformer::forward(const int* ids, size_t t, Workspace& ws) const {
     const size_t d = cfg.dim, f = cfg.ff(), H = cfg.heads, dh = cfg.head_dim(), V = cfg.vocab;
     if (t < 1 || t > cfg.context)
         throw std::runtime_error("transformer: Sequenzlaenge " + std::to_string(t) +
                                  " ausserhalb von 1.." + std::to_string(cfg.context));
-    t_cur_ = t;
+    ws.t_cur = t;
 
     // Embedding
     std::vector<double> x(t * d);
@@ -281,12 +334,12 @@ inline const std::vector<double>& Transformer::forward(const int* ids, size_t t)
         for (size_t j = 0; j < d; ++j) x[i * d + j] = te[j] + pe[j];
     }
 
-    cache_.assign(cfg.layers, LayerCache());
+    ws.layers.assign(cfg.layers, Workspace::Layer());
     const double scale = 1.0 / std::sqrt((double)dh);
 
     for (size_t l = 0; l < cfg.layers; ++l) {
         const LayerOff& o = L[l];
-        LayerCache& c = cache_[l];
+        Workspace::Layer& c = ws.layers[l];
         c.x_in = x;
 
         // --- Attention ---
@@ -307,9 +360,7 @@ inline const std::vector<double>& Transformer::forward(const int* ids, size_t t)
                 double maxv = -1e300;
                 for (size_t j = 0; j <= i; ++j) {            // kausal: nur j <= i
                     const double* kj = &c.k[j * d + h * dh];
-                    double s = 0.0;
-                    for (size_t e = 0; e < dh; ++e) s += qi[e] * kj[e];
-                    p[j] = s * scale;
+                    p[j] = dot(qi, kj, dh) * scale;
                     maxv = std::max(maxv, p[j]);
                 }
                 double sum = 0.0;
@@ -331,36 +382,36 @@ inline const std::vector<double>& Transformer::forward(const int* ids, size_t t)
         c.xn2.resize(t * d); c.ln2.resize(t * d); c.mean2.resize(t); c.rstd2.resize(t);
         layernorm(c.x_mid.data(), &params[o.ln2g], &params[o.ln2b],
                   c.xn2.data(), c.ln2.data(), c.mean2.data(), c.rstd2.data(), t, d);
-        c.h_pre.resize(t * f); c.h_act.resize(t * f);
+        c.h_pre.resize(t * f); c.h_act.resize(t * f); c.h_tanh.resize(t * f);
         linear(c.ln2.data(), &params[o.w1], &params[o.b1], c.h_pre.data(), t, d, f);
-        for (size_t i = 0; i < t * f; ++i) c.h_act[i] = gelu(c.h_pre[i]);
+        for (size_t i = 0; i < t * f; ++i) c.h_act[i] = gelu(c.h_pre[i], c.h_tanh[i]);
         std::vector<double> mlp_out(t * d);
         linear(c.h_act.data(), &params[o.w2], &params[o.b2], mlp_out.data(), t, f, d);
         for (size_t i = 0; i < t * d; ++i) x[i] = c.x_mid[i] + mlp_out[i];
     }
 
-    x_last_ = x;
-    xnf_.resize(t * d); lnf_.resize(t * d); meanf_.resize(t); rstdf_.resize(t);
-    layernorm(x_last_.data(), &params[off_lnfg], &params[off_lnfb],
-              xnf_.data(), lnf_.data(), meanf_.data(), rstdf_.data(), t, d);
-    logits_.resize(t * V);
-    linear(lnf_.data(), &params[off_out], nullptr, logits_.data(), t, d, V);
-    return logits_;
+    ws.x_last = x;
+    ws.xnf.resize(t * d); ws.lnf.resize(t * d); ws.meanf.resize(t); ws.rstdf.resize(t);
+    layernorm(ws.x_last.data(), &params[off_lnfg], &params[off_lnfb],
+              ws.xnf.data(), ws.lnf.data(), ws.meanf.data(), ws.rstdf.data(), t, d);
+    ws.logits.resize(t * V);
+    linear(ws.lnf.data(), &params[off_out], nullptr, ws.logits.data(), t, d, V);
+    return ws.logits;
 }
 
-inline double Transformer::loss(const int* targets, size_t t) {
+inline double Transformer::loss(const int* targets, size_t t, Workspace& ws) const {
     const size_t V = cfg.vocab;
-    if (t != t_cur_) throw std::runtime_error("transformer: loss() ohne passendes forward()");
-    dlogits_.assign(t * V, 0.0);
+    if (t != ws.t_cur) throw std::runtime_error("transformer: loss() ohne passendes forward()");
+    ws.dlogits.assign(t * V, 0.0);
     double total = 0.0;
     for (size_t i = 0; i < t; ++i) {
         if (targets[i] < 0 || (size_t)targets[i] >= V)
             throw std::runtime_error("transformer: Ziel-ID " + std::to_string(targets[i]) +
                                      " ausserhalb des Vokabulars");
-        const double* lg = &logits_[i * V];
+        const double* lg = &ws.logits[i * V];
         double maxv = *std::max_element(lg, lg + V);
         double sum = 0.0;
-        double* dl = &dlogits_[i * V];
+        double* dl = &ws.dlogits[i * V];
         for (size_t j = 0; j < V; ++j) { dl[j] = std::exp(lg[j] - maxv); sum += dl[j]; }
         for (size_t j = 0; j < V; ++j) dl[j] /= sum;
         total += -std::log(std::max(dl[(size_t)targets[i]], 1e-300));
@@ -370,44 +421,44 @@ inline double Transformer::loss(const int* targets, size_t t) {
     return total / (double)t;
 }
 
-inline void Transformer::backward(const int* ids, size_t t) {
+inline void Transformer::backward(const int* ids, size_t t, Workspace& ws, double* g) const {
     const size_t d = cfg.dim, f = cfg.ff(), H = cfg.heads, dh = cfg.head_dim(), V = cfg.vocab;
-    if (t != t_cur_ || dlogits_.size() != t * V)
+    if (t != ws.t_cur || ws.dlogits.size() != t * V)
         throw std::runtime_error("transformer: backward() ohne passendes forward()/loss()");
     const double scale = 1.0 / std::sqrt((double)dh);
 
     // Ausgabe-Projektion und finales LayerNorm
     std::vector<double> dlnf(t * d, 0.0);
-    linear_back(lnf_.data(), &params[off_out], dlogits_.data(),
-                &grads[off_out], nullptr, dlnf.data(), t, d, V);
+    linear_back(ws.lnf.data(), &params[off_out], ws.dlogits.data(),
+                (g + off_out), nullptr, dlnf.data(), t, d, V);
     std::vector<double> dx(t * d, 0.0);
-    layernorm_back(dlnf.data(), xnf_.data(), rstdf_.data(), &params[off_lnfg],
-                   dx.data(), &grads[off_lnfg], &grads[off_lnfb], t, d);
+    layernorm_back(dlnf.data(), ws.xnf.data(), ws.rstdf.data(), &params[off_lnfg],
+                   dx.data(), (g + off_lnfg), (g + off_lnfb), t, d);
 
     for (size_t l = cfg.layers; l-- > 0;) {
         const LayerOff& o = L[l];
-        LayerCache& c = cache_[l];
+        Workspace::Layer& c = ws.layers[l];
 
         // x_out = x_mid + mlp_out  ->  dx fliesst unveraendert in beide Zweige
         std::vector<double> dx_mid = dx;                     // Residual-Pfad
         // --- MLP rueckwaerts ---
         std::vector<double> dh_act(t * f, 0.0);
         linear_back(c.h_act.data(), &params[o.w2], dx.data(),
-                    &grads[o.w2], &grads[o.b2], dh_act.data(), t, f, d);
+                    (g + o.w2), (g + o.b2), dh_act.data(), t, f, d);
         std::vector<double> dh_pre(t * f);
-        for (size_t i = 0; i < t * f; ++i) dh_pre[i] = dh_act[i] * gelu_grad(c.h_pre[i]);
+        for (size_t i = 0; i < t * f; ++i) dh_pre[i] = dh_act[i] * gelu_grad(c.h_pre[i], c.h_tanh[i]);
         std::vector<double> dln2(t * d, 0.0);
         linear_back(c.ln2.data(), &params[o.w1], dh_pre.data(),
-                    &grads[o.w1], &grads[o.b1], dln2.data(), t, d, f);
+                    (g + o.w1), (g + o.b1), dln2.data(), t, d, f);
         layernorm_back(dln2.data(), c.xn2.data(), c.rstd2.data(), &params[o.ln2g],
-                       dx_mid.data(), &grads[o.ln2g], &grads[o.ln2b], t, d);
+                       dx_mid.data(), (g + o.ln2g), (g + o.ln2b), t, d);
 
         // x_mid = x_in + attn_out
         std::vector<double> dx_in = dx_mid;                  // Residual-Pfad
         // --- Attention rueckwaerts ---
         std::vector<double> dctx(t * d, 0.0);
         linear_back(c.ctx.data(), &params[o.wo], dx_mid.data(),
-                    &grads[o.wo], nullptr, dctx.data(), t, d, d);
+                    (g + o.wo), nullptr, dctx.data(), t, d, d);
 
         std::vector<double> dq(t * d, 0.0), dk(t * d, 0.0), dv(t * d, 0.0);
         std::vector<double> dp(t);
@@ -416,20 +467,20 @@ inline void Transformer::backward(const int* ids, size_t t) {
                 const double* p   = &c.att[(h * t + i) * t];
                 const double* dc  = &dctx[i * d + h * dh];
                 // dp_j = dctx_i . v_j ;  dv_j += p_j * dctx_i
-                double dot = 0.0;
+                double dsum = 0.0;
                 for (size_t j = 0; j <= i; ++j) {
                     const double* vj = &c.v[j * d + h * dh];
                     double* dvj = &dv[j * d + h * dh];
-                    double s = 0.0;
-                    for (size_t e = 0; e < dh; ++e) { s += dc[e] * vj[e]; dvj[e] += p[j] * dc[e]; }
+                    for (size_t e = 0; e < dh; ++e) dvj[e] += p[j] * dc[e];
+                    const double s = Transformer::dot(dc, vj, dh);
                     dp[j] = s;
-                    dot += p[j] * s;
+                    dsum += p[j] * s;
                 }
                 // Softmax-Rueckwaerts: ds_j = p_j * (dp_j - sum_j' p_j' dp_j')
                 const double* qi = &c.q[i * d + h * dh];
                 double* dqi = &dq[i * d + h * dh];
                 for (size_t j = 0; j <= i; ++j) {
-                    double ds = p[j] * (dp[j] - dot) * scale;
+                    double ds = p[j] * (dp[j] - dsum) * scale;
                     const double* kj = &c.k[j * d + h * dh];
                     double* dkj = &dk[j * d + h * dh];
                     for (size_t e = 0; e < dh; ++e) { dqi[e] += ds * kj[e]; dkj[e] += ds * qi[e]; }
@@ -437,19 +488,19 @@ inline void Transformer::backward(const int* ids, size_t t) {
             }
         }
         std::vector<double> dln1(t * d, 0.0);
-        linear_back(c.ln1.data(), &params[o.wq], dq.data(), &grads[o.wq], nullptr, dln1.data(), t, d, d);
-        linear_back(c.ln1.data(), &params[o.wk], dk.data(), &grads[o.wk], nullptr, dln1.data(), t, d, d);
-        linear_back(c.ln1.data(), &params[o.wv], dv.data(), &grads[o.wv], nullptr, dln1.data(), t, d, d);
+        linear_back(c.ln1.data(), &params[o.wq], dq.data(), (g + o.wq), nullptr, dln1.data(), t, d, d);
+        linear_back(c.ln1.data(), &params[o.wk], dk.data(), (g + o.wk), nullptr, dln1.data(), t, d, d);
+        linear_back(c.ln1.data(), &params[o.wv], dv.data(), (g + o.wv), nullptr, dln1.data(), t, d, d);
         layernorm_back(dln1.data(), c.xn1.data(), c.rstd1.data(), &params[o.ln1g],
-                       dx_in.data(), &grads[o.ln1g], &grads[o.ln1b], t, d);
+                       dx_in.data(), (g + o.ln1g), (g + o.ln1b), t, d);
 
         dx = dx_in;
     }
 
     // Embedding-Gradienten
     for (size_t i = 0; i < t; ++i) {
-        double* gt = &grads[off_tok + (size_t)ids[i] * d];
-        double* gp = &grads[off_pos + i * d];
+        double* gt = g + off_tok + (size_t)ids[i] * d;
+        double* gp = (g + off_pos + i * d);
         for (size_t j = 0; j < d; ++j) { gt[j] += dx[i * d + j]; gp[j] += dx[i * d + j]; }
     }
 }
@@ -475,26 +526,52 @@ inline double lr_schedule(size_t step, size_t total, double min_ratio = 0.1) {
 class Adam {
 public:
     double lr, beta1, beta2, eps, clip_norm;
+    static constexpr size_t kChunk = 16384;   // Abschnittsgroesse fuer die (thread-unabhaengige) Summation
+
     explicit Adam(size_t n, double lr_, double clip = 1.0)
         : lr(lr_), beta1(0.9), beta2(0.999), eps(1e-8), clip_norm(clip), m_(n, 0.0), v_(n, 0.0) {}
 
     // Ein Schritt mit den (bereits gemittelten) Gradienten. Liefert die Norm vor dem Clipping.
     // lr_mult skaliert die Lernrate fuer diesen Schritt (siehe lr_schedule()).
-    double step(std::vector<double>& params, const std::vector<double>& grads, double lr_mult = 1.0) {
+    // run_chunks(n, fn) fuehrt fn(0..n-1) aus, evtl. parallel (Standard: nacheinander). Die Summe
+    // der Gradienten-Quadrate wird in festen Abschnitten gebildet und in Abschnitts-Reihenfolge
+    // addiert; das Ergebnis haengt daher nicht davon ab, wie run_chunks parallelisiert.
+    template <typename RunChunks>
+    double step(std::vector<double>& params, const std::vector<double>& grads, double lr_mult,
+                RunChunks&& run_chunks) {
+        const size_t n = params.size();
+        const size_t n_chunks = (n + kChunk - 1) / kChunk;
+        std::vector<double> part(n_chunks, 0.0);
+        run_chunks(n_chunks, [&](size_t c) {
+            const size_t lo = c * kChunk, hi = std::min(n, lo + kChunk);
+            double sq = 0.0;
+            for (size_t i = lo; i < hi; ++i) sq += grads[i] * grads[i];
+            part[c] = sq;
+        });
         double sq = 0.0;
-        for (double g : grads) sq += g * g;
-        double norm = std::sqrt(sq);
-        double s = (clip_norm > 0.0 && norm > clip_norm) ? clip_norm / norm : 1.0;
+        for (double x : part) sq += x;
+        const double norm = std::sqrt(sq);
+        const double s = (clip_norm > 0.0 && norm > clip_norm) ? clip_norm / norm : 1.0;
         ++t_;
         const double b1t = 1.0 - std::pow(beta1, (double)t_);
         const double b2t = 1.0 - std::pow(beta2, (double)t_);
-        for (size_t i = 0; i < params.size(); ++i) {
-            double g = grads[i] * s;
-            m_[i] = beta1 * m_[i] + (1.0 - beta1) * g;
-            v_[i] = beta2 * v_[i] + (1.0 - beta2) * g * g;
-            params[i] -= lr * lr_mult * (m_[i] / b1t) / (std::sqrt(v_[i] / b2t) + eps);
-        }
+        const double step_lr = lr * lr_mult;
+        run_chunks(n_chunks, [&](size_t c) {
+            const size_t lo = c * kChunk, hi = std::min(n, lo + kChunk);
+            for (size_t i = lo; i < hi; ++i) {
+                const double g = grads[i] * s;
+                m_[i] = beta1 * m_[i] + (1.0 - beta1) * g;
+                v_[i] = beta2 * v_[i] + (1.0 - beta2) * g * g;
+                params[i] -= step_lr * (m_[i] / b1t) / (std::sqrt(v_[i] / b2t) + eps);
+            }
+        });
         return norm;
+    }
+
+    double step(std::vector<double>& params, const std::vector<double>& grads, double lr_mult = 1.0) {
+        return step(params, grads, lr_mult, [](size_t n, const std::function<void(size_t)>& fn) {
+            for (size_t c = 0; c < n; ++c) fn(c);
+        });
     }
 
 private:

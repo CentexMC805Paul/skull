@@ -6,6 +6,7 @@
 //    - welches Modell gespeichert wird (bestes Validierungs-Modell, nicht das letzte)
 //    - Early Stopping (patience)
 //    - Aufteilung in Training und Validierung (split_data)
+//  Dazu: Parallelisierung (threads.h, Slots) muss exakt und thread-unabhaengig sein.
 //  Das Echtzeit-Verhalten auf echten Daten (Ueberanpassung usw.) zeigen die
 //  Skript-Tests; hier geht es um die Logik, die nicht vom Zufall abhaengen darf.
 //
@@ -13,6 +14,8 @@
 // ============================================================
 #include <cstdio>
 #include <cmath>
+#include <cstring>
+#include <atomic>
 #include <vector>
 #include <string>
 #include "trainer.h"
@@ -61,6 +64,93 @@ static TrainResult run(int epochs, int patience, std::vector<double> val_seq, bo
     saved_dim = load_weights(path).dim;
     std::remove(path.c_str());
     return r;
+}
+
+
+static bool same_bits(const std::vector<double>& a, const std::vector<double>& b) {
+    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0;
+}
+
+// Synthetische Token-Folge mit Struktur (damit der Loss sinkt)
+static std::vector<int> synthetic_ids(size_t n, int vocab) {
+    std::vector<int> ids(n);
+    for (size_t i = 0; i < n; ++i) ids[i] = (int)((i * 7 + (i / 5) * 3) % (size_t)vocab);
+    return ids;
+}
+
+static void check_parallel_slots() {
+    std::printf("parallel_slots\n");
+    {
+        bool once = true;
+        for (size_t threads : {1u, 2u, 3u, 7u, 64u}) {
+            std::vector<std::atomic<int>> hits(23);
+            for (auto& h : hits) h = 0;
+            parallel_slots(hits.size(), threads, [&](size_t sl) { ++hits[sl]; });
+            for (auto& h : hits) if (h != 1) once = false;
+        }
+        expect(once, "jeder Slot wird genau einmal ausgefuehrt (1, 2, 3, 7, 64 Threads)");
+    }
+    {
+        bool threw = false;
+        try {
+            parallel_slots(16, 4, [&](size_t sl) { if (sl == 9) throw std::runtime_error("boom"); });
+        } catch (const std::runtime_error& e) { threw = std::string(e.what()) == "boom"; }
+        expect(threw, "Ausnahme aus einem Thread wird nach dem Join weitergereicht");
+    }
+    {
+        bool ok = true;
+        parallel_slots(0, 4, [&](size_t) { ok = false; });
+        expect(ok, "0 Slots: nichts wird ausgefuehrt");
+    }
+}
+
+static void check_adam_chunks() {
+    std::printf("Adam: parallele Abschnitte == sequentiell (bitgleich)\n");
+    const size_t n = 100003;   // bewusst kein Vielfaches der Abschnittsgroesse
+    std::vector<double> p0(n), g(n);
+    for (size_t i = 0; i < n; ++i) { p0[i] = std::sin(0.001 * i); g[i] = std::cos(0.0007 * i) * 3.0; }
+    auto run = [&](size_t threads) {
+        std::vector<double> p = p0;
+        Adam opt(n, 0.01, 1.0);
+        for (int step = 0; step < 5; ++step)
+            opt.step(p, g, 0.5, [&](size_t nc, const std::function<void(size_t)>& fn) { parallel_slots(nc, threads, fn); });
+        return p;
+    };
+    const std::vector<double> a = run(1), b = run(4), c = run(7);
+    expect(same_bits(a, b) && same_bits(a, c), "1, 4 und 7 Threads liefern dieselben Parameter");
+    std::vector<double> d = p0;
+    Adam seq(n, 0.01, 1.0);
+    for (int step = 0; step < 5; ++step) seq.step(d, g, 0.5);
+    expect(same_bits(a, d), "identisch zur Variante ohne run_chunks");
+    expect(!same_bits(a, p0), "Parameter haben sich veraendert");
+}
+
+static void check_trainer_threads() {
+    std::printf("Transformer-Training: Ergebnis unabhaengig von der Thread-Anzahl\n");
+    const std::vector<int> ids = synthetic_ids(1200, 40);
+    std::vector<int> val(ids.begin() + 1000, ids.end());
+    std::vector<int> train(ids.begin(), ids.begin() + 1000);
+
+    auto run = [&](int threads, int batch) {
+        TrainConfig cfg;
+        cfg.epochs = 3; cfg.rate = 0.01; cfg.batch = batch; cfg.dim = 16; cfg.context = 12;
+        cfg.heads = 2; cfg.layers = 2; cfg.threads = threads; cfg.vocab = 40;
+        TransformerConfig tc = make_transformer_config(cfg, 40, train.size() - 1);
+        TransformerTrainer t(cfg, tc, train, nullptr);
+        std::vector<double> losses;
+        for (int e = 0; e < cfg.epochs; ++e) losses.push_back(t.train_epoch());
+        losses.push_back(t.evaluate(val));
+        return std::make_pair(t.export_weights().tparams, losses);
+    };
+    for (int batch : {8, 5, 3}) {
+        auto r1 = run(1, batch), r2 = run(2, batch), r3 = run(3, batch), r8 = run(8, batch);
+        const bool w = same_bits(r1.first, r2.first) && same_bits(r1.first, r3.first) && same_bits(r1.first, r8.first);
+        const bool l = same_bits(r1.second, r2.second) && same_bits(r1.second, r3.second) && same_bits(r1.second, r8.second);
+        expect(w, "batch " + std::to_string(batch) + ": Gewichte bitgleich bei 1, 2, 3 und 8 Threads");
+        expect(l, "batch " + std::to_string(batch) + ": Trainings- und Validierungs-Loss bitgleich");
+    }
+    auto r = run(2, 8);
+    expect(r.second.front() > r.second[2], "der Loss sinkt waehrend des Trainings");
 }
 
 int main() {
@@ -152,6 +242,10 @@ int main() {
         expect(s.val.empty() && s.train.size() == 120 && !s.note.empty(),
                "val 0.5 bei 120 Token waeren nur 60 Validierungs-Token -> uebersprungen, alles wird trainiert");
     }
+
+    check_parallel_slots();
+    check_adam_chunks();
+    check_trainer_threads();
 
     if (failures) { std::printf("\n%d Pruefung(en) fehlgeschlagen\n", failures); return 1; }
     std::printf("\nAlle Pruefungen bestanden\n");

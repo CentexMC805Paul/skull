@@ -16,6 +16,7 @@ project(Skull VERSION ${SKULL_VERSION} LANGUAGES CXX)
 option(SKULL_USE_OPENCL   "OpenCL-Geraeteerkennung einbauen (braucht OpenCL-Header + Bibliothek)" OFF)
 option(SKULL_ENABLE_AVX2  "AVX2/FMA-Instruktionen verwenden (nur x86-64; fuer aeltere CPUs auf OFF stellen)" ON)
 option(SKULL_SANITIZE     "AddressSanitizer + UBSan + Container-Assertions einschalten (gcc/clang)" OFF)
+option(SKULL_TSAN         "ThreadSanitizer einschalten: findet Datenrennen (gcc/clang, nicht zusammen mit SKULL_SANITIZE)" OFF)
 option(SKULL_BUILD_TESTS  "Tests (ctest) bauen" ON)
 
 # Ohne Angabe: Release (Ein-Konfigurations-Generatoren wie Make/Ninja)
@@ -49,11 +50,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|x64|X86_64)$")
 endif()
 set(SKULL_AVX2_ACTIVE FALSE)
 
-# ---- Threads (pthread fuer den Interpreter-Thread mit grossem Stack) ----
+# ---- Threads (Interpreter-Thread mit grossem Stack, parallele Trainingsschritte) ----
 if(NOT WIN32)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
     find_package(Threads REQUIRED)
-    target_link_libraries(skull PRIVATE Threads::Threads)
+    target_link_libraries(skull_flags INTERFACE Threads::Threads)
 endif()
 
 # ---- Compiler-Flags ----
@@ -87,6 +88,18 @@ if(SKULL_SANITIZE)
     target_link_options(skull_flags INTERFACE -fsanitize=address,undefined)
 endif()
 
+# ---- ThreadSanitizer (fuer Tests/CI) ----
+if(SKULL_TSAN)
+    if(MSVC)
+        message(FATAL_ERROR "SKULL_TSAN wird nur mit gcc/clang unterstuetzt")
+    endif()
+    if(SKULL_SANITIZE)
+        message(FATAL_ERROR "SKULL_TSAN und SKULL_SANITIZE schliessen sich aus (ThreadSanitizer und AddressSanitizer nicht kombinierbar)")
+    endif()
+    target_compile_options(skull_flags INTERFACE -fsanitize=thread -fno-omit-frame-pointer -g -O1)
+    target_link_options(skull_flags INTERFACE -fsanitize=thread)
+endif()
+
 # ---- OpenCL (optional) ----
 # Nur Geraeteerkennung (gpu_info(), gpu = true). Das Training selbst
 # laeuft derzeit immer auf der CPU.
@@ -118,6 +131,6 @@ message(STATUS "  Plattform:   ${CMAKE_SYSTEM_NAME} (${CMAKE_SYSTEM_PROCESSOR})"
 message(STATUS "  Build-Typ:   ${_skull_build_type}")
 message(STATUS "  AVX2:        ${SKULL_AVX2_ACTIVE}")
 message(STATUS "  OpenCL:      ${SKULL_USE_OPENCL}")
-message(STATUS "  Sanitizer:   ${SKULL_SANITIZE}")
+message(STATUS "  Sanitizer:   ${SKULL_SANITIZE} (Thread: ${SKULL_TSAN})")
 message(STATUS "  Tests:       ${SKULL_BUILD_TESTS}")
 message(STATUS "")

@@ -45,6 +45,31 @@ size as before; most of the "v1.0.0" feature list below was announced but never 
   lives in one place (`src/version.h`).
   AVX2 can be switched off (`-DSKULL_ENABLE_AVX2=OFF`) for older CPUs.
 
+### ⚡ Performance (Transformer training)
+
+Measured on Tiny Shakespeare (1.1 MB), dim 64, 2 layers, 4 heads, context 64, batch 8
+(4-vCPU VM; its 4th vCPU is over-subscribed, so more than ~3 threads do not scale here):
+
+| | tokens/s |
+|---|---|
+| before | ~5 000 |
+| faster kernels, 1 thread | ~10 000 (1.9-2.1x) |
+| + 2 threads | ~17 000 (3.4x) |
+
+- **Backward pass 3.2x faster** (profiled with callgrind: `linear_back` was 55 % of the work). The
+  `dX = dY W^T` loop was a floating-point reduction, which the compiler may not reorder without
+  `-ffast-math`, so it stayed scalar (3-4 GFLOP/s instead of 12-15). It now uses dot products with 16
+  fixed partial sums (a fixed order, so identical on every system, but SIMD-friendly); `dW` processes 4
+  rows at a time. The same dot product speeds up attention; the GELU's `tanh` is reused from the
+  forward pass. (A register-tiled matrix multiply I tried first was *slower* and was dropped.)
+- **Multi-threading** (`threads`): the sequences of a batch run in parallel, as does validation and the
+  Adam step. Work is assigned to fixed *slots* (sequence `b` -> slot `b % 8`) and partial sums are
+  combined in a fixed order, so **the trained weights are bit-identical for any thread count**
+  (verified for 1, 2, 3, 4 and 8 threads, `tests/traincheck.cpp`). `-DSKULL_TSAN=ON` builds with
+  ThreadSanitizer: no data race in the suite, while a deliberately injected one is reported.
+- The transformer now separates read-only parameters from a per-call `Workspace`, which is what makes
+  the above thread-safe.
+
 ### ➕ Added
 
 - **Validation.** `train` holds back the last 10 % of the data (`val`, at most 50 000 tokens) and

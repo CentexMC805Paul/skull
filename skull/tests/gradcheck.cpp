@@ -13,7 +13,9 @@
 #include <vector>
 #include <random>
 #include <string>
+#include <cstring>
 #include "transformer.h"
+#include "threads.h"
 
 static int failures = 0;
 
@@ -154,6 +156,36 @@ static void check_validation() {
     expect(thrown, "Token-ID ausserhalb des Vokabulars wird abgelehnt");
 }
 
+// Mehrere Threads rechnen gleichzeitig mit je eigenem Workspace und Gradientenpuffer auf demselben
+// (nur gelesenen) Modell. Ergebnis muss bitgleich zur sequentiellen Rechnung sein.
+static void check_thread_safety() {
+    std::printf("Thread-Sicherheit (gleichzeitige Durchlaeufe auf einem Modell)\n");
+    TransformerConfig c; c.vocab = 13; c.dim = 16; c.context = 9; c.heads = 2; c.layers = 2;
+    Transformer m = make_model(c, 21);
+    const size_t n_seq = 24, t = 9, P = m.params.size();
+    std::vector<std::vector<int>> ids(n_seq), tgt(n_seq);
+    for (size_t i = 0; i < n_seq; ++i) make_data(c, 100 + (unsigned)i, t, ids[i], tgt[i]);
+
+    std::vector<std::vector<double>> seq_g(n_seq, std::vector<double>(P, 0.0));
+    std::vector<double> seq_l(n_seq);
+    { Transformer::Workspace ws;
+      for (size_t i = 0; i < n_seq; ++i) seq_l[i] = m.step_loss_and_grad(ids[i].data(), tgt[i].data(), t, ws, seq_g[i].data()); }
+
+    std::vector<std::vector<double>> par_g(n_seq, std::vector<double>(P, 0.0));
+    std::vector<double> par_l(n_seq);
+    std::vector<Transformer::Workspace> ws(8);
+    parallel_slots(n_seq, 8, [&](size_t i) {
+        par_l[i] = m.step_loss_and_grad(ids[i].data(), tgt[i].data(), t, ws[i % 8], par_g[i].data());
+    });
+
+    bool same = true;
+    for (size_t i = 0; i < n_seq; ++i) {
+        if (std::memcmp(&seq_l[i], &par_l[i], sizeof(double)) != 0) same = false;
+        if (std::memcmp(seq_g[i].data(), par_g[i].data(), P * sizeof(double)) != 0) same = false;
+    }
+    expect(same, "24 Sequenzen auf 8 Threads: Loss und Gradienten bitgleich zur sequentiellen Rechnung");
+}
+
 int main() {
     TransformerConfig a; a.vocab = 7; a.dim = 8;  a.context = 5; a.heads = 2; a.layers = 2;
     check_gradients(a, 5, "2 Schichten, 2 Koepfe, volle Laenge");
@@ -169,6 +201,7 @@ int main() {
     check_causality(d);
     check_init_loss_and_overfit(d);
     check_validation();
+    check_thread_safety();
 
     if (failures) { std::printf("\n%d Pruefung(en) fehlgeschlagen\n", failures); return 1; }
     std::printf("\nAlle Pruefungen bestanden\n");

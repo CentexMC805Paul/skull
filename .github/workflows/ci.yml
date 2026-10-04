@@ -37,8 +37,16 @@ jobs:
           - name: gcc Sanitizer
             cxx: g++
             args: -DCMAKE_BUILD_TYPE=Debug -DSKULL_SANITIZE=ON
+          - name: gcc ThreadSanitizer
+            cxx: g++
+            args: -DCMAKE_BUILD_TYPE=Debug -DSKULL_TSAN=ON
+            tsan: true
     steps:
       - uses: actions/checkout@v4
+      - name: ASLR fuer ThreadSanitizer anpassen
+        if: matrix.tsan
+        # Auf neuen Kerneln startet TSan sonst nicht ("unexpected memory mapping")
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
       - name: Konfigurieren
         run: cmake -S . -B build -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} ${{ matrix.args }}
       - name: Bauen

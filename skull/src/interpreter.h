@@ -400,7 +400,7 @@ private:
             for (const auto& f : n->fields) names.push_back({f.name, f.line});
             warn_fields("train", n->model_name, names,
                         {"data", "out", "epochs", "rate", "batch", "dim", "vocab", "steps",
-                         "context", "heads", "layers", "val", "patience",
+                         "context", "heads", "layers", "val", "patience", "threads",
                          "bpe", "bpe_vocab", "gpu", "prefer_amd"}, {});
             for (const auto& f : n->fields) {
                 SkullValue val = eval_expr(f.value.get(), env);
@@ -417,6 +417,7 @@ private:
                 if (f.name == "layers")     cfg.layers     = to_size(val, f.line, "layers");
                 if (f.name == "val")        cfg.val        = val.as_number(f.line);
                 if (f.name == "patience")   cfg.patience   = to_int(val, f.line, "patience");
+                if (f.name == "threads")    cfg.threads    = to_int(val, f.line, "threads");
                 if (f.name == "bpe")        cfg.use_bpe    = val.is_truthy();
                 if (f.name == "bpe_vocab")  cfg.bpe_vocab  = to_int(val, f.line, "bpe_vocab");
                 if (f.name == "gpu")        cfg.use_gpu    = val.is_truthy();

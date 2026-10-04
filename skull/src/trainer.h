@@ -18,6 +18,7 @@
 #include "weights.h"
 #include "transformer.h"
 #include "rng.h"
+#include "threads.h"
 #include "version.h"
 
 // ============================================================
@@ -46,7 +47,7 @@
 //
 //  Optionen (train { ... }):
 //    data, out, epochs, rate, batch, dim, vocab, steps, context, heads, layers,
-//    val, patience, bpe, bpe_vocab, gpu, prefer_amd
+//    val, patience, threads, bpe, bpe_vocab, gpu, prefer_amd
 //  out = Pfad der Gewichte-Datei (Standard: data + ".weights").
 //  steps = 0 (Standard): jede Epoche geht durch ALLE Tokens.
 //  steps > 0: pro Epoche nur so viele Token-Schritte (zufaellige Fenster),
@@ -58,6 +59,9 @@
 //  Validierungs-Loss gespeichert.
 //  patience = Abbruch, wenn sich der Validierungs-Loss N Epochen lang nicht
 //  verbessert (0 = aus).
+//  threads = Anzahl Rechen-Threads des Transformers (0 = alle Kerne). Parallel laufen die
+//  Sequenzen eines Batches (batch > 1) und die Validierung. Das Ergebnis ist unabhaengig von
+//  der Thread-Anzahl bitgleich (feste Slot-Zuordnung, siehe threads.h).
 // ============================================================
 
 inline void softmax_inplace(FlatVec& v) {
@@ -106,6 +110,7 @@ struct TrainConfig {
     size_t      layers     = 0;       // nur Transformer (0 = Standard: 1)
     double      val        = 0.1;     // Anteil Validierungsdaten (vom Dateiende), 0 = aus
     int         patience   = 0;       // Early Stopping nach N Epochen ohne Verbesserung, 0 = aus
+    int         threads    = 0;       // nur Transformer: Anzahl Threads (0 = alle Kerne); aendert das Ergebnis nicht
     bool        use_bpe    = false;   // BPE-Tokenisierung aktivieren
     int         bpe_vocab  = 1000;    // BPE Ziel-Vokabular
     bool        use_gpu    = false;   // GPU via OpenCL (derzeit nur initialisiert)
@@ -351,8 +356,16 @@ inline TransformerConfig make_transformer_config(const TrainConfig& cfg, size_t 
 }
 
 // Zufaellige Fenster der Laenge `context`, Adam, Mini-Batch aus mehreren Fenstern.
+//
+// Parallelisierung: Die Sequenzen eines Batches werden fest auf SLOTS verteilt (Sequenz b gehoert
+// zu Slot b % kSlots); jeder Slot hat eigenen Arbeitsspeicher und einen eigenen Gradientenpuffer.
+// Die Slots laufen auf bis zu `threads` Threads. Danach werden die Slot-Gradienten in fester
+// Reihenfolge addiert. Weil die Slot-Anzahl nur von batch und Modellgroesse abhaengt (nicht von
+// der Maschine), ist das Ergebnis unabhaengig von der Thread-Anzahl bitgleich.
 class TransformerTrainer : public TrainableModel {
 public:
+    static constexpr size_t kMaxSlots = 8;
+
     TransformerTrainer(const TrainConfig& cfg, const TransformerConfig& tc,
                        const std::vector<int>& ids, const BPETokenizer* bpe)
         : cfg_(cfg), tc_(tc), ids_(ids), model_(tc),
@@ -366,7 +379,18 @@ public:
         updates_per_epoch_ = (seqs_per_epoch_ + batch_ - 1) / batch_;
         total_updates_     = (size_t)cfg_.epochs * updates_per_epoch_;
         if (bpe) { has_bpe_ = true; bpe_ = *bpe; }
+
+        // Slots: hoechstens 8, nicht mehr als Sequenzen pro Batch, und der Speicher fuer die
+        // Gradientenpuffer (Slots x Parameter) bleibt begrenzt. Nur von batch und Modell abhaengig.
+        const size_t max_by_memory = std::max<size_t>(1, ((size_t)1 << 28) / tc_.param_count());
+        slots_ = std::max<size_t>(1, std::min({kMaxSlots, batch_, max_by_memory}));
+        threads_ = cfg_.threads > 0 ? (size_t)cfg_.threads : skull_hardware_threads();
+        threads_ = std::min<size_t>(threads_, 64);
+        work_.resize(std::max(slots_, kMaxSlots));
+        if (slots_ > 1) slot_grads_.assign(slots_, std::vector<double>(tc_.param_count(), 0.0));
     }
+
+    size_t threads() const { return threads_; }
 
     void print_info(size_t total_tokens) const override {
         std::cout << "[Skull] Modell:     Transformer (" << tc_.layers << " Schicht(en), " << tc_.heads
@@ -375,41 +399,84 @@ public:
         std::cout << "[Skull] Vokabular:  " << tc_.vocab << "\n";
         std::cout << "[Skull] Sequenzen/Epoche: " << seqs_per_epoch_ << " (je " << T_ << " Token), "
                   << updates_per_epoch_ << " Update(s)\n";
+        std::cout << "[Skull] Threads:    " << std::min(threads_, std::max<size_t>(slots_, 1))
+                  << " (von " << skull_hardware_threads() << " Kernen; Ergebnis haengt nicht davon ab)\n";
         std::cout << "[Skull] Parameter:  " << tc_.param_count() << "\n\n";
     }
 
     double train_epoch() override {
         double epoch_loss = 0.0;
         size_t seqs_done = 0;
+        std::vector<size_t> starts;
+        std::vector<double> slot_loss;
         for (size_t u = 0; u < updates_per_epoch_; ++u) {
             const size_t n_in = std::min(batch_, seqs_per_epoch_ - seqs_done);
-            model_.zero_grads();
-            for (size_t b = 0; b < n_in; ++b) {
-                const size_t s = rng_below(rng_, n_pairs_ - T_ + 1);
-                epoch_loss += model_.step_loss_and_grad(&ids_[s], &ids_[s + 1], T_);
-            }
-            if (n_in > 1) {
+            // Fenster in fester Reihenfolge ziehen (unabhaengig von Threads)
+            starts.resize(n_in);
+            for (size_t b = 0; b < n_in; ++b) starts[b] = rng_below(rng_, n_pairs_ - T_ + 1);
+
+            if (slots_ == 1) {
+                model_.zero_grads();
+                for (size_t b = 0; b < n_in; ++b)
+                    epoch_loss += model_.step_loss_and_grad(&ids_[starts[b]], &ids_[starts[b] + 1], T_,
+                                                            work_[0], model_.grads.data());
+            } else {
+                const size_t used = std::min(slots_, n_in);
+                slot_loss.assign(used, 0.0);
+                parallel_slots(used, threads_, [&](size_t sl) {
+                    std::vector<double>& g = slot_grads_[sl];
+                    std::fill(g.begin(), g.end(), 0.0);
+                    double l = 0.0;
+                    for (size_t b = sl; b < n_in; b += slots_)       // feste Zuordnung Sequenz -> Slot
+                        l += model_.step_loss_and_grad(&ids_[starts[b]], &ids_[starts[b] + 1], T_,
+                                                       work_[sl], g.data());
+                    slot_loss[sl] = l;
+                });
+                // Slot-Gradienten in fester Reihenfolge addieren (parallel ueber Abschnitte des Vektors;
+                // jedes Element wird immer in der Reihenfolge Slot 0, 1, 2, ... summiert)
+                const size_t P = model_.grads.size();
+                const size_t chunk = 16384, n_chunks = (P + chunk - 1) / chunk;
                 const double inv = 1.0 / (double)n_in;
-                for (auto& g : model_.grads) g *= inv;
+                parallel_slots(n_chunks, threads_, [&](size_t c) {
+                    const size_t lo = c * chunk, hi = std::min(P, lo + chunk);
+                    for (size_t i = lo; i < hi; ++i) {
+                        double acc = slot_grads_[0][i];
+                        for (size_t sl = 1; sl < used; ++sl) acc += slot_grads_[sl][i];
+                        model_.grads[i] = acc * inv;     // Mittel ueber die Sequenzen des Batches
+                    }
+                });
+                for (size_t sl = 0; sl < used; ++sl) epoch_loss += slot_loss[sl];
             }
-            opt_.step(model_.params, model_.grads, lr_schedule(update_no_++, total_updates_));
+            opt_.step(model_.params, model_.grads, lr_schedule(update_no_++, total_updates_),
+                      [&](size_t n_chunks, const std::function<void(size_t)>& fn) {
+                          parallel_slots(n_chunks, threads_, fn);
+                      });
             seqs_done += n_in;
         }
         return epoch_loss / (double)seqs_done;
     }
 
     // Aufeinanderfolgende Fenster der Laenge `context` (ohne Ueberlappung); jedes Token
-    // wird mit hoechstens `context` vorigen Token vorhergesagt.
+    // wird mit hoechstens `context` vorigen Token vorhergesagt. Die Fenster werden fest auf
+    // Slots verteilt und die Teilsummen in fester Reihenfolge addiert (threadunabhaengig).
     double evaluate(const std::vector<int>& v) override {
         if (v.size() < 2) return std::numeric_limits<double>::quiet_NaN();
+        const size_t n_windows = (v.size() - 1 + T_ - 1) / T_;
+        const size_t used = std::min(kMaxSlots, n_windows);
+        std::vector<double> sum(used, 0.0);
+        std::vector<size_t> cnt(used, 0);
+        parallel_slots(used, threads_, [&](size_t sl) {
+            for (size_t wdw = sl; wdw < n_windows; wdw += used) {
+                const size_t start = wdw * T_;
+                const size_t len = std::min(T_, v.size() - 1 - start);
+                model_.forward(&v[start], len, work_[sl]);
+                sum[sl] += model_.loss(&v[start + 1], len, work_[sl]) * (double)len;
+                cnt[sl] += len;
+            }
+        });
         double total = 0.0;
         size_t count = 0;
-        for (size_t start = 0; start + 1 < v.size(); start += T_) {
-            const size_t len = std::min(T_, v.size() - 1 - start);
-            model_.forward(&v[start], len);
-            total += model_.loss(&v[start + 1], len) * (double)len;
-            count += len;
-        }
+        for (size_t sl = 0; sl < used; ++sl) { total += sum[sl]; count += cnt[sl]; }
         return total / (double)count;
     }
 
@@ -433,6 +500,9 @@ private:
     std::mt19937 rng_;
     size_t n_pairs_ = 0, T_ = 0, seqs_per_epoch_ = 0, batch_ = 1, updates_per_epoch_ = 0;
     size_t total_updates_ = 0, update_no_ = 0;
+    size_t slots_ = 1, threads_ = 1;
+    std::vector<Transformer::Workspace> work_;
+    std::vector<std::vector<double>> slot_grads_;
     bool has_bpe_ = false;
     BPETokenizer bpe_;
 };

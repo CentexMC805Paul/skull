@@ -212,6 +212,7 @@ beim Generieren immer die letzten `context` Token.
 | `steps` | 0 | 0 = jede Epoche geht durch **alle** Tokens; sonst nur so viele Token-Schritte (zufällige Fenster) pro Epoche, für große Dateien |
 | `dim`, `vocab` | 64, 256 | Auch im `define model` setzbar |
 | `val` | 0.1 | Anteil der Daten (vom **Dateiende**), der nicht trainiert, sondern zum Bewerten benutzt wird; 0 = aus. Höchstens 50 000 Token; bei zu wenig Daten (< 100 Token) wird übersprungen, mit Hinweis |
+| `threads` | 0 | Nur Transformer: Anzahl Rechen-Threads (0 = alle Kerne). Parallel laufen die Sequenzen eines Batches (`batch > 1`) und die Validierung. **Das Ergebnis ist bitgleich, egal wie viele Threads rechnen.** |
 | `patience` | 0 | Early Stopping: Abbruch, wenn sich der Validierungs-Loss N Epochen nicht verbessert (0 = aus) |
 | `context` | 1 | 1 = Bigram, > 1 = Transformer mit diesem Kontext (max. 8192) |
 | `heads`, `layers` | 2, 1 | Nur Transformer. `dim` muss durch `heads` teilbar sein |
