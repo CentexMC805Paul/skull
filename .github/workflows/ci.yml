@@ -60,7 +60,11 @@ jobs:
         run: ctest --test-dir build --output-on-failure -j2
       - name: Ist das Programm wirklich statisch gelinkt?
         if: matrix.static
-        run: ldd build/skull 2>&1 | grep -qE "not a dynamic executable|statically linked"
+        # ldd endet bei statischen Programmen mit Exit-Code 1: nicht direkt in einer Pipe (pipefail)
+        run: |
+          ldd build/skull > ldd.out 2>&1 || true
+          cat ldd.out
+          grep -qE "not a dynamic executable|statically linked" ldd.out
 
   # Der Weg aus der README: build.sh / build.bat muessen auf frischen Systemen funktionieren
   build-script:
