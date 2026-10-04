@@ -32,6 +32,16 @@ set_target_properties(skull_rngcheck PROPERTIES CXX_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/tests")
 add_test(NAME rng_platform_independent COMMAND skull_rngcheck)
 
+# ---- C++-Test: BPE-Tokenizer (src/tokenizer.h) gegen eine naive Referenz ----
+add_executable(skull_bpecheck bpecheck.cpp)
+target_include_directories(skull_bpecheck PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(skull_bpecheck PRIVATE skull_flags)
+set_target_properties(skull_bpecheck PROPERTIES CXX_EXTENSIONS OFF
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/tests"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/tests")
+add_test(NAME bpe_matches_reference COMMAND skull_bpecheck)
+
 set(SKULL_TESTENV "${CMAKE_BINARY_DIR}/testenv")
 file(REMOVE_RECURSE "${SKULL_TESTENV}")
 file(COPY "${CMAKE_SOURCE_DIR}/examples" DESTINATION "${SKULL_TESTENV}")
@@ -107,6 +117,7 @@ skull_case(gen_truncated_weights    cases/gen_truncated_weights.skull    EXIT 1 
 skull_case(gen_garbage_weights      cases/gen_garbage_weights.skull      EXIT 1 MATCH "unplausible Groessen")
 skull_case(gen_not_weights          cases/gen_not_weights.skull          EXIT 1 MATCH "Magic .* fehlt")
 skull_case(bpe_roundtrip            cases/bpe_roundtrip.skull            MATCH "BPE-Tokenizer.*--- Ende ---")
+skull_case(bpe_not_capped           cases/bpe_not_capped.skull           MATCH "Endgroesse Vokabular: 1000 Tokens.*vocab=1000, Bigram, BPE-Tokenizer.*--- Ende ---" NO_MATCH "Endgroesse Vokabular: 756")
 
 # ---- Transformer (Attention) ----
 skull_case(tf_learns_context        cases/tf_learns_context.skull        MATCH "Modell:   Transformer.*das ist ein test\\.")
