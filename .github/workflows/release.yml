@@ -12,10 +12,6 @@ on:
   push:
     tags:
       - 'v*'
-    # TEMPORAER: damit der Ablauf vor dem ersten Tag auf diesem Branch geprueft werden kann
-    # (baut und testet die Pakete, legt aber kein Release an). Nach dem Test entfernen.
-    branches:
-      - claude/great-curie-xmzmha
   workflow_dispatch:
 
 permissions:
