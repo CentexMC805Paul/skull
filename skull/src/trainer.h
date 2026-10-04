@@ -16,6 +16,7 @@
 #include "gpu.h"
 #include "weights.h"
 #include "transformer.h"
+#include "rng.h"
 #include "version.h"
 
 // ============================================================
@@ -29,7 +30,8 @@
 //
 //  context > 1: Transformer mit kausaler Attention (src/transformer.h).
 //    Sieht bis zu `context` vorige Token. Felder heads, layers, dim.
-//    Training mit Adam (`rate` = Adam-Lernrate, typisch 0.001 - 0.01).
+//    Training mit Adam (`rate` = Spitzen-Lernrate, typisch 0.001 - 0.01; kurzer
+//    Warmup, danach Cosine-Abfall auf 10 %).
 //
 //  Forward und Backward sind in beiden Faellen von Hand ausgeschrieben und
 //  arbeiten direkt auf Vektoren (kein Autograd-Graph pro Schritt).
@@ -57,13 +59,13 @@ inline double cross_entropy(const FlatVec& probs, int target_id) {
     return -std::log(std::max(probs[target_id], 1e-10));
 }
 
-// Xavier-Initialisierung, identische Zufallsfolge wie tensor_rand(r, c, seed).
+// Xavier-Initialisierung, identische Zufallsfolge wie tensor_rand(r, c, seed)
+// (und dank rng.h auf jedem Betriebssystem dieselbe).
 inline FlatVec xavier_init(size_t rows, size_t cols, unsigned seed) {
     FlatVec v(rows * cols);
     double limit = std::sqrt(6.0 / (double)(rows + cols));
     std::mt19937 rng(seed);
-    std::uniform_real_distribution<double> dist(-limit, limit);
-    for (auto& x : v) x = dist(rng);
+    for (auto& x : v) x = rng_uniform(rng, -limit, limit);
     return v;
 }
 
@@ -147,8 +149,9 @@ inline void train_transformer(const TrainConfig& cfg, const std::vector<int>& id
     Transformer model(tc);
     model.init(42);
     Adam opt(model.params.size(), cfg.rate, 1.0);
+    const size_t total_updates = (size_t)cfg.epochs * updates_per_epoch;
+    size_t update_no = 0;
     std::mt19937 rng(12345);
-    std::uniform_int_distribution<size_t> start_dist(0, n_pairs - T);
     auto t_start = std::chrono::high_resolution_clock::now();
 
     for (int epoch = 1; epoch <= cfg.epochs; ++epoch) {
@@ -158,14 +161,14 @@ inline void train_transformer(const TrainConfig& cfg, const std::vector<int>& id
             const size_t n_in = std::min(batch, seqs_per_epoch - seqs_done);
             model.zero_grads();
             for (size_t b = 0; b < n_in; ++b) {
-                const size_t s = start_dist(rng);
+                const size_t s = rng_below(rng, n_pairs - T + 1);
                 epoch_loss += model.step_loss_and_grad(&ids[s], &ids[s + 1], T);
             }
             if (n_in > 1) {
                 const double inv = 1.0 / (double)n_in;
                 for (auto& g : model.grads) g *= inv;
             }
-            opt.step(model.params, model.grads);
+            opt.step(model.params, model.grads, lr_schedule(update_no++, total_updates));
             seqs_done += n_in;
         }
         const double avg_loss = epoch_loss / (double)seqs_done;
@@ -322,7 +325,7 @@ inline void skull_train(const TrainConfig& cfg) {
         double epoch_loss = 0.0;
         size_t start = 0;
         if (steps_per_ep < n_pairs)
-            start = std::uniform_int_distribution<size_t>(0, n_pairs - steps_per_ep)(window_rng);
+            start = rng_below(window_rng, n_pairs - steps_per_ep + 1);
 
         for (size_t s = 0; s < steps_per_ep; ++s) {
             const int input_id  = ids[start + s];

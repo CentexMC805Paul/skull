@@ -10,6 +10,7 @@
 #include "tensor.h"
 #include "weights.h"
 #include "transformer.h"
+#include "rng.h"
 #include "version.h"
 
 // ============================================================
@@ -57,8 +58,7 @@ inline void softmax_temp(FlatVec& v, double temperature) {
 
 // Naechstes Token sampeln (zufaellig nach Wahrscheinlichkeit)
 inline int sample(const FlatVec& probs, std::mt19937& rng) {
-    std::uniform_real_distribution<double> dist(0.0, 1.0);
-    double r = dist(rng);
+    double r = rng_uniform01(rng);
     double cumsum = 0.0;
     for (size_t i = 0; i < probs.size(); ++i) {
         cumsum += probs[i];

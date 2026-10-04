@@ -10,6 +10,7 @@
 #include <iostream>
 #include <unordered_set>
 #include <utility>
+#include "rng.h"
 
 // ============================================================
 //  SKULL TENSOR
@@ -134,8 +135,7 @@ inline TensorPtr tensor_rand(size_t r, size_t c, unsigned seed = 0) {
     t->requires_grad = true;
     double limit = std::sqrt(6.0 / (double)(r + c));
     std::mt19937 rng(seed == 0 ? std::random_device{}() : seed);
-    std::uniform_real_distribution<double> dist(-limit, limit);
-    for (auto& val : t->data) val = dist(rng);
+    for (auto& val : t->data) val = rng_uniform(rng, -limit, limit);
     return t;
 }
 

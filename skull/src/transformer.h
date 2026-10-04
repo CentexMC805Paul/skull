@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <algorithm>
+#include "rng.h"
 
 // ============================================================
 //  SKULL TRANSFORMER
@@ -84,8 +85,7 @@ public:
         std::mt19937 rng(seed);
         const size_t d = cfg.dim, f = cfg.ff();
         auto uniform = [&](size_t off, size_t n, double limit) {
-            std::uniform_real_distribution<double> dist(-limit, limit);
-            for (size_t i = 0; i < n; ++i) params[off + i] = dist(rng);
+            for (size_t i = 0; i < n; ++i) params[off + i] = rng_uniform(rng, -limit, limit);
         };
         auto xavier = [&](size_t off, size_t rows, size_t cols) {
             uniform(off, rows * cols, std::sqrt(6.0 / (double)(rows + cols)));
@@ -455,6 +455,21 @@ inline void Transformer::backward(const int* ids, size_t t) {
 }
 
 // ============================================================
+//  Lernraten-Plan: kurzer linearer Anstieg (Warmup), dann Cosine-Abfall auf
+//  min_ratio der Spitzen-Lernrate. Liefert den Faktor fuer Schritt `step`
+//  (0-basiert) von `total` Schritten. Ohne Abfall bleibt das Training bei
+//  konstanter Lernrate dauerhaft "verrauscht" und konvergiert schlechter.
+// ============================================================
+inline double lr_schedule(size_t step, size_t total, double min_ratio = 0.1) {
+    if (total <= 1) return 1.0;
+    const size_t warmup = std::min<size_t>(50, total / 10);
+    if (step < warmup) return (double)(step + 1) / (double)(warmup + 1);
+    const double progress = (double)(step - warmup) / (double)std::max<size_t>(1, total - warmup - 1);
+    const double pi = 3.14159265358979323846;
+    return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + std::cos(pi * std::min(1.0, progress)));
+}
+
+// ============================================================
 //  Adam (mit globalem Gradienten-Clipping)
 // ============================================================
 class Adam {
@@ -464,7 +479,8 @@ public:
         : lr(lr_), beta1(0.9), beta2(0.999), eps(1e-8), clip_norm(clip), m_(n, 0.0), v_(n, 0.0) {}
 
     // Ein Schritt mit den (bereits gemittelten) Gradienten. Liefert die Norm vor dem Clipping.
-    double step(std::vector<double>& params, const std::vector<double>& grads) {
+    // lr_mult skaliert die Lernrate fuer diesen Schritt (siehe lr_schedule()).
+    double step(std::vector<double>& params, const std::vector<double>& grads, double lr_mult = 1.0) {
         double sq = 0.0;
         for (double g : grads) sq += g * g;
         double norm = std::sqrt(sq);
@@ -476,7 +492,7 @@ public:
             double g = grads[i] * s;
             m_[i] = beta1 * m_[i] + (1.0 - beta1) * g;
             v_[i] = beta2 * v_[i] + (1.0 - beta2) * g * g;
-            params[i] -= lr * (m_[i] / b1t) / (std::sqrt(v_[i] / b2t) + eps);
+            params[i] -= lr * lr_mult * (m_[i] / b1t) / (std::sqrt(v_[i] / b2t) + eps);
         }
         return norm;
     }

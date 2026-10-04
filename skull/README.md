@@ -176,7 +176,7 @@ train Mini {
     data = "text.txt"
     out  = "mini.weights"   // optional: Zielpfad der Gewichte
     epochs = 200
-    rate   = 0.003          // beim Transformer die Adam-Lernrate
+    rate   = 0.003          // beim Transformer die Spitzen-Lernrate von Adam
     batch  = 4              // Sequenzen pro Update
 }
 ```
@@ -207,7 +207,7 @@ beim Generieren immer die letzten `context` Token.
 | `data` | – | Pfad zur Trainingsdatei (String, Pflicht) |
 | `out` | `data` + `.weights` | Zielpfad der Gewichte-Datei |
 | `epochs` | 10 | Durchläufe über die Daten |
-| `rate` | 0.001 | Lernrate (Bigram: SGD, Transformer: Adam) |
+| `rate` | 0.001 | Lernrate (Bigram: SGD; Transformer: Adam, Spitzenwert mit Warmup und Cosine-Abfall auf 10 %) |
 | `batch` | 1 | Bigram: Tokens pro Update; Transformer: Sequenzen pro Update (Gradient wird gemittelt) |
 | `steps` | 0 | 0 = jede Epoche geht durch **alle** Tokens; sonst nur so viele Token-Schritte (zufällige Fenster) pro Epoche, für große Dateien |
 | `dim`, `vocab` | 64, 256 | Auch im `define model` setzbar |

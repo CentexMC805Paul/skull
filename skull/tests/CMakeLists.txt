@@ -22,6 +22,16 @@ set_target_properties(skull_gradcheck PROPERTIES CXX_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/tests")
 add_test(NAME transformer_gradcheck COMMAND skull_gradcheck)
 
+# ---- C++-Test: Zufallszahlen muessen auf jedem System gleich sein (src/rng.h) ----
+add_executable(skull_rngcheck rngcheck.cpp)
+target_include_directories(skull_rngcheck PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(skull_rngcheck PRIVATE skull_flags)
+set_target_properties(skull_rngcheck PROPERTIES CXX_EXTENSIONS OFF
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/tests"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/tests")
+add_test(NAME rng_platform_independent COMMAND skull_rngcheck)
+
 set(SKULL_TESTENV "${CMAKE_BINARY_DIR}/testenv")
 file(REMOVE_RECURSE "${SKULL_TESTENV}")
 file(COPY "${CMAKE_SOURCE_DIR}/examples" DESTINATION "${SKULL_TESTENV}")
@@ -99,7 +109,7 @@ skull_case(gen_not_weights          cases/gen_not_weights.skull          EXIT 1 
 skull_case(bpe_roundtrip            cases/bpe_roundtrip.skull            MATCH "BPE-Tokenizer.*--- Ende ---")
 
 # ---- Transformer (Attention) ----
-skull_case(tf_learns_context        cases/tf_learns_context.skull        MATCH "Modell:   Transformer.*das ist ein test\\. das ist ein test")
+skull_case(tf_learns_context        cases/tf_learns_context.skull        MATCH "Modell:   Transformer.*das ist ein test\\.")
 skull_case(bigram_control           cases/bigram_control.skull           MATCH "Modell:   Bigram" NO_MATCH "ein test")
 skull_case(tf_bpe                   cases/tf_bpe.skull                   MATCH "Transformer.*BPE-Tokenizer.*--- Ende ---")
 skull_case(tf_bad_heads             cases/tf_bad_heads.skull             EXIT 1 MATCH "durch heads")

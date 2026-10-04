@@ -17,7 +17,8 @@ size as before; most of the "v1.0.0" feature list below was announced but never 
 - **Memory leak in training.** Autograd closures captured their own tensor (reference cycle), and
   every training step allocated a transposed copy of `W_out`. Peak memory grew linearly with
   steps: 3.7 GB after 50 epochs on a 281-byte file. The trainer now runs without an autograd
-  graph: **constant ~10 MB, and 50 epochs take ~0.5 s instead of ~25 s** with identical loss values.
+  graph: **constant ~10 MB, and 50 epochs take ~0.5 s instead of ~25 s** (the loss curve was
+  identical to the old implementation step for step at the time of this rewrite).
 - **Autograd counted gradients twice** for tensors used more than once (e.g. `h + h`).
   `backward()` now walks the graph in topological order.
 - **Training only used the first 500 tokens** of any data file. Epochs now cover all tokens
@@ -63,8 +64,19 @@ size as before; most of the "v1.0.0" feature list below was announced but never 
 
 ### 🔄 Changed
 
-- Tests are self-contained: each training test writes its own weights file (they used to share
-  files, which could make `ctest -j` racy), and the examples that share one file are serialised.
+- **Random numbers are now identical on every platform** (`src/rng.h`). `std::mt19937` is fixed by
+  the C++ standard, but `std::uniform_real_distribution` / `std::uniform_int_distribution` are not:
+  libstdc++, libc++ (macOS) and MSVC return different numbers for the same seed, so the same
+  `train` produced different initial weights and training windows on different systems. Skull now
+  converts the raw generator output itself (bit-identical to NumPy's `rand()` for the same seed;
+  `tests/rngcheck.cpp`). Trained weights differ from earlier builds for the same data.
+- **Transformer training uses a learning-rate schedule** (short linear warm-up, then cosine decay
+  to 10 % of `rate`). With a constant rate the loss kept jittering around its floor and about one
+  run in twenty ended with a visibly worse model; `rate` is now the peak learning rate.
+- Tests are self-contained: each training test writes its own weights file. They used to share
+  files, and this **did** fail on macOS CI (`train_all_data` read weights overwritten by
+  `train_steps_window` when `ctest` ran tests in parallel). The examples that share one file are
+  now serialised.
 
 - `gpu = true` now says openly that training still runs on the CPU (it only detects the device).
 - `examples/test.skull` uses a small model and the bundled data instead of a missing file.

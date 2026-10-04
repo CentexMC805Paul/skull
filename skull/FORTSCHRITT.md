@@ -31,7 +31,9 @@ train Mini { data = "text.txt"  out = "mini.weights"  epochs = 200  rate = 0.003
 ```
 - `context = 1` (Standard): Embedding → ReLU-Hidden → Softmax, ein Token Kontext (Bigram), SGD.
 - `context > 1`: Transformer mit kausaler Multi-Head-Attention, LayerNorm, GELU-MLP, mehreren
-  Schichten, Adam mit Gradienten-Clipping. Backward von Hand, gegen endliche Differenzen geprüft.
+  Schichten, Adam mit Gradienten-Clipping und Lernraten-Plan (Warmup, Cosine-Abfall). Backward von
+  Hand, gegen endliche Differenzen geprüft.
+- Zufallszahlen sind auf jedem System identisch (`rng.h`): gleicher Seed = gleiche Startgewichte.
 - Alle Tokens pro Epoche (oder Fenster mit `steps`), echtes Mini-Batch, BPE optional.
 - Konstanter Speicherbedarf, kein Autograd-Graph im Trainingsschritt.
 - Formate: `.txt`, `.md`, `.json`, `.jsonl`, `.csv`.
@@ -64,6 +66,7 @@ skull/src/
   stack.h        — Interpreter-Thread mit großem Stack
   tensor.h       — Tensor-Engine + Autograd (AVX2), für die Sprache
   transformer.h  — Transformer (Attention) + Adam, Backward von Hand
+  rng.h          — plattformunabhängige Zufallszahlen
   tokenizer.h    — Dateiformate + BPE
   weights.h      — Gewichte speichern/laden (mit Prüfung)
   trainer.h      — Training
