@@ -50,6 +50,10 @@ Please add a regression test with every bug fix.
 Memory errors: build with `-DSKULL_SANITIZE=ON` (gcc/clang) and run `ctest`; this enables
 AddressSanitizer, LeakSanitizer and UBSan. CI does this on every push.
 
+Numerical code (anything with a hand-written backward pass) needs a gradient check against finite
+differences — see `tests/gradcheck.cpp`. Check that the test actually fails when you break the
+code (e.g. drop a term from the derivative).
+
 `experimental/` is **not** part of the build; see its README before touching it.
 
 ## Questions?

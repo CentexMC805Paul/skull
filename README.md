@@ -25,9 +25,11 @@ generate MyLLM {
 ```
 
 **Status:** v1.0.0 — the language and a small trainer work; builds with CMake on Linux, macOS and Windows.
-The model is deliberately tiny (it sees one token at a time), so it demonstrates training and
-generation rather than producing meaningful text. Attention, GPU training and Python bindings are
-not implemented yet — drafts live in [`skull/experimental/`](skull/experimental/README.md).
+The models are deliberately tiny: a bigram model (sees one token) and a small causal-attention
+transformer (`context > 1`, trained with Adam, gradients verified against finite differences).
+They demonstrate training and generation rather than producing high-quality text. GPU training
+and Python bindings are not implemented yet — drafts live in
+[`skull/experimental/`](skull/experimental/README.md).
 
 ---
 

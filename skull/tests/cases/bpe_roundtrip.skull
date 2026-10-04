@@ -1,4 +1,4 @@
 // BPE trainieren und danach generieren (frueher: Ausgabe sinnlos, Tokenizer nicht gespeichert)
 define model M { dim = 16 }
-train M { data = "data/repeat.txt"  epochs = 10  rate = 0.05  bpe = true  bpe_vocab = 300 }
-generate M { weights = "data/repeat.txt.weights"  prompt = "das ist"  tokens = 20  temperature = 0 }
+train M { data = "data/repeat.txt"  out = "data/bpe.weights"  epochs = 10  rate = 0.05  bpe = true  bpe_vocab = 300 }
+generate M { weights = "data/bpe.weights"  prompt = "das ist"  tokens = 20  temperature = 0 }

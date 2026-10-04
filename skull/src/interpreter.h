@@ -351,8 +351,11 @@ private:
         if (it == models.end()) return;
         for (const auto& f : it->second->fields) {
             SkullValue val = eval_expr(f.value.get(), env);
-            if (f.name == "dim")   cfg.dim   = to_size(val, f.line, "dim");
-            if (f.name == "vocab") cfg.vocab = to_size(val, f.line, "vocab");
+            if (f.name == "dim")     cfg.dim     = to_size(val, f.line, "dim");
+            if (f.name == "vocab")   cfg.vocab   = to_size(val, f.line, "vocab");
+            if (f.name == "context") cfg.context = to_size(val, f.line, "context");
+            if (f.name == "heads")   cfg.heads   = to_size(val, f.line, "heads");
+            if (f.name == "layers")  cfg.layers  = to_size(val, f.line, "layers");
         }
     }
 
@@ -365,7 +368,7 @@ private:
         if (auto* n = dynamic_cast<const ModelStmt*>(node)) {
             std::vector<std::pair<std::string, int>> names;
             for (const auto& f : n->fields) names.push_back({f.name, f.line});
-            warn_fields("model", n->name, names, {"dim", "vocab"}, {"layers", "heads"});
+            warn_fields("model", n->name, names, {"dim", "vocab", "context", "heads", "layers"}, {});
             models[n->name] = n;
             std::cout << "[Skull] Modell '" << n->name << "' definiert\n";
             return;
@@ -378,17 +381,22 @@ private:
             std::vector<std::pair<std::string, int>> names;
             for (const auto& f : n->fields) names.push_back({f.name, f.line});
             warn_fields("train", n->model_name, names,
-                        {"data", "epochs", "rate", "batch", "dim", "vocab", "steps",
+                        {"data", "out", "epochs", "rate", "batch", "dim", "vocab", "steps",
+                         "context", "heads", "layers",
                          "bpe", "bpe_vocab", "gpu", "prefer_amd"}, {});
             for (const auto& f : n->fields) {
                 SkullValue val = eval_expr(f.value.get(), env);
                 if (f.name == "data")       cfg.data_path  = val.as_string(f.line);
+                if (f.name == "out")        cfg.out_path   = val.as_string(f.line);
                 if (f.name == "epochs")     cfg.epochs     = to_int(val, f.line, "epochs");
                 if (f.name == "rate")       cfg.rate       = val.as_number(f.line);
                 if (f.name == "batch")      cfg.batch      = to_int(val, f.line, "batch");
                 if (f.name == "dim")        cfg.dim        = to_size(val, f.line, "dim");
                 if (f.name == "vocab")      cfg.vocab      = to_size(val, f.line, "vocab");
                 if (f.name == "steps")      cfg.steps      = to_size(val, f.line, "steps");
+                if (f.name == "context")    cfg.context    = to_size(val, f.line, "context");
+                if (f.name == "heads")      cfg.heads      = to_size(val, f.line, "heads");
+                if (f.name == "layers")     cfg.layers     = to_size(val, f.line, "layers");
                 if (f.name == "bpe")        cfg.use_bpe    = val.is_truthy();
                 if (f.name == "bpe_vocab")  cfg.bpe_vocab  = to_int(val, f.line, "bpe_vocab");
                 if (f.name == "gpu")        cfg.use_gpu    = val.is_truthy();
@@ -409,7 +417,8 @@ private:
             std::vector<std::pair<std::string, int>> names;
             for (const auto& f : n->fields) names.push_back({f.name, f.line});
             warn_fields("generate", n->model_name, names,
-                        {"weights", "prompt", "tokens", "temperature", "dim", "vocab"}, {});
+                        {"weights", "prompt", "tokens", "temperature", "dim", "vocab",
+                         "context", "heads", "layers"}, {});
             for (const auto& f : n->fields) {
                 SkullValue val = eval_expr(f.value.get(), env);
                 if (f.name == "weights")     cfg.weights_path = val.as_string(f.line);
@@ -418,6 +427,9 @@ private:
                 if (f.name == "temperature") cfg.temperature  = val.as_number(f.line);
                 if (f.name == "dim")         cfg.dim          = to_size(val, f.line, "dim");
                 if (f.name == "vocab")       cfg.vocab        = to_size(val, f.line, "vocab");
+                if (f.name == "context")     cfg.context      = to_size(val, f.line, "context");
+                if (f.name == "heads")       cfg.heads        = to_size(val, f.line, "heads");
+                if (f.name == "layers")      cfg.layers       = to_size(val, f.line, "layers");
             }
             try {
                 skull_generate(cfg);

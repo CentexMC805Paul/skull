@@ -33,7 +33,8 @@ Empfohlene Reihenfolge, damit jeder Schritt prüfbar bleibt:
 
 1. `layers.h` einzeln zum Kompilieren bringen (ohne `model.h`, `skull_python.cpp`).
 2. Pro Layer einen Gradiententest gegen endliche Differenzen schreiben, bevor irgendetwas trainiert wird.
-3. Erst dann ein Modell mit Kontext > 1 Token (Attention) bauen und über `define model { ... }` in
-   `../src/interpreter.h` anbinden. Die Felder `layers` und `heads` werden dort heute nur mit einer
-   Warnung ignoriert.
+3. Beachten: Ein Transformer mit Attention, Backward von Hand und Gradiententest existiert inzwischen
+   in `../src/transformer.h` und ist über `define model { context = ... heads = ... layers = ... }`
+   angebunden. Ideen aus `layers.h` (LSTM, Conv1D, weitere Optimizer) lassen sich dort nach
+   demselben Muster ergänzen: erst Backward, dann Gradiententest (`../tests/gradcheck.cpp`).
 4. Python-Bindings und CUDA zuletzt.

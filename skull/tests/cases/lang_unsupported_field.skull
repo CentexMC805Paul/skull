@@ -1,2 +1,0 @@
-// layers/heads wurden frueher still ignoriert
-define model M { dim = 8  layers = 6  heads = 8 }

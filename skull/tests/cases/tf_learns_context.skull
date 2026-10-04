@@ -1,0 +1,5 @@
+// Der Transformer sieht mehrere Zeichen Kontext. In "das ist ein test. " folgt auf ein Leerzeichen
+// mal i, e, t oder d - das Bigram-Modell kann das nicht vorhersagen (siehe bigram_control).
+define model M { dim = 24  context = 16  heads = 2  layers = 1 }
+train M { data = "data/repeat.txt"  out = "data/tf_context.weights"  epochs = 100  rate = 0.01  batch = 2 }
+generate M { weights = "data/tf_context.weights"  prompt = "das ist "  tokens = 40  temperature = 0 }

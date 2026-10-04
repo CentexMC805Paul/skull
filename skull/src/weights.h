@@ -7,21 +7,31 @@
 #include <stdexcept>
 #include "tensor.h"
 #include "tokenizer.h"
+#include "transformer.h"
 
 // ============================================================
 //  SKULL WEIGHTS  —  Gewichte speichern und laden
 //
-//  Dateiformat (little-endian, IEEE-754 double):
+//  Dateiformat (little-endian, IEEE-754 double). Zwei Modellarten:
+//
+//  A) Bigram-Modell ("SKULL"):
 //    "SKULL"                       5 Byte Magic
 //    uint64  dim
 //    uint64  vocab
 //    double  W_embed [vocab * dim]
 //    double  W_hidden[dim   * dim]
 //    double  W_out   [dim   * vocab]
-//    optional (nur bei BPE-Training):
-//      "TOKB"                      4 Byte Magic
-//      uint32  n_merges
-//      n_merges x ( uint32 len_a, a[len_a], uint32 len_b, b[len_b] )
+//
+//  B) Transformer ("SKULT"):
+//    "SKULT"                       5 Byte Magic
+//    uint32  version (= 1)
+//    uint64  vocab, dim, context, heads, layers
+//    double  params[param_count]   (Reihenfolge siehe transformer.h)
+//
+//  Beide koennen am Ende (nur bei BPE-Training) tragen:
+//    "TOKB"                        4 Byte Magic
+//    uint32  n_merges
+//    n_merges x ( uint32 len_a, a[len_a], uint32 len_b, b[len_b] )
 //
 //  Aeltere Dateien ohne TOKB-Abschnitt (Zeichen-Tokenizer) bleiben
 //  lesbar. Beim Laden wird die Dateigroesse gegen die Header-Werte
@@ -31,9 +41,15 @@
 struct SkullWeights {
     size_t       dim   = 0;
     size_t       vocab = 0;
+    // Bigram-Modell
     FlatVec      W_embed;    // vocab x dim
     FlatVec      W_hidden;   // dim   x dim
     FlatVec      W_out;      // dim   x vocab
+    // Transformer
+    bool              is_transformer = false;
+    TransformerConfig tcfg;
+    FlatVec           tparams;
+    // Tokenizer (optional)
     bool         has_bpe = false;
     BPETokenizer bpe;
 };
@@ -42,6 +58,8 @@ namespace weights_detail {
 
 static constexpr uint64_t MAX_DIM    = 1ull << 16;   // 65536
 static constexpr uint64_t MAX_VOCAB  = 1ull << 24;   // 16 Mio
+static constexpr uint64_t MAX_CONTEXT = 1ull << 13;  // 8192
+static constexpr uint64_t MAX_LAYERS  = 1ull << 10;  // 1024
 static constexpr uint64_t MAX_MERGES = 1ull << 20;
 static constexpr uint64_t MAX_TOKLEN = 1ull << 12;
 
@@ -99,15 +117,27 @@ inline void save_weights(const std::string& path, const SkullWeights& w) {
     if (!f.is_open())
         throw std::runtime_error("Gewichte konnten nicht geschrieben werden: " + path);
 
-    f.write("SKULL", 5);
-    put_u64(f, (uint64_t)w.dim);
-    put_u64(f, (uint64_t)w.vocab);
-    f.write(reinterpret_cast<const char*>(w.W_embed.data()),
-            (std::streamsize)(w.W_embed.size() * sizeof(double)));
-    f.write(reinterpret_cast<const char*>(w.W_hidden.data()),
-            (std::streamsize)(w.W_hidden.size() * sizeof(double)));
-    f.write(reinterpret_cast<const char*>(w.W_out.data()),
-            (std::streamsize)(w.W_out.size() * sizeof(double)));
+    if (w.is_transformer) {
+        f.write("SKULT", 5);
+        put_u32(f, 1);   // Format-Version
+        put_u64(f, (uint64_t)w.tcfg.vocab);
+        put_u64(f, (uint64_t)w.tcfg.dim);
+        put_u64(f, (uint64_t)w.tcfg.context);
+        put_u64(f, (uint64_t)w.tcfg.heads);
+        put_u64(f, (uint64_t)w.tcfg.layers);
+        f.write(reinterpret_cast<const char*>(w.tparams.data()),
+                (std::streamsize)(w.tparams.size() * sizeof(double)));
+    } else {
+        f.write("SKULL", 5);
+        put_u64(f, (uint64_t)w.dim);
+        put_u64(f, (uint64_t)w.vocab);
+        f.write(reinterpret_cast<const char*>(w.W_embed.data()),
+                (std::streamsize)(w.W_embed.size() * sizeof(double)));
+        f.write(reinterpret_cast<const char*>(w.W_hidden.data()),
+                (std::streamsize)(w.W_hidden.size() * sizeof(double)));
+        f.write(reinterpret_cast<const char*>(w.W_out.data()),
+                (std::streamsize)(w.W_out.size() * sizeof(double)));
+    }
 
     if (w.has_bpe) {
         f.write("TOKB", 4);
@@ -122,6 +152,33 @@ inline void save_weights(const std::string& path, const SkullWeights& w) {
         throw std::runtime_error("Fehler beim Schreiben der Gewichte: " + path);
 }
 
+// Liest den optionalen TOKB-Abschnitt (BPE-Merges) ab der aktuellen Position, falls Daten uebrig sind.
+inline void read_tokenizer_section(std::istream& f, uint64_t file_size, uint64_t expected,
+                                   SkullWeights& w, uint64_t vocab, const std::string& path) {
+    using namespace weights_detail;
+    if (file_size <= expected) return;
+    char tm[4] = {};
+    if (!f.read(tm, 4) || std::memcmp(tm, "TOKB", 4) != 0)
+        throw std::runtime_error("Gewichte-Datei: unbekannte Daten nach den Gewichten: " + path);
+    uint32_t n = 0;
+    if (!get_u32(f, n) || n > MAX_MERGES)
+        throw std::runtime_error("Gewichte-Datei: Tokenizer-Abschnitt beschaedigt: " + path);
+    std::vector<std::pair<std::string, std::string>> merges;
+    merges.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string a, b;
+        if (!get_str(f, a) || !get_str(f, b))
+            throw std::runtime_error("Gewichte-Datei: Tokenizer-Abschnitt abgeschnitten: " + path);
+        merges.emplace_back(std::move(a), std::move(b));
+    }
+    w.bpe     = rebuild_bpe(merges);
+    w.has_bpe = true;
+    if ((uint64_t)w.bpe.vocab_size() != vocab)
+        throw std::runtime_error(
+            "Gewichte-Datei: Vokabulargroesse passt nicht zum Tokenizer (" +
+            std::to_string(vocab) + " vs " + std::to_string(w.bpe.vocab_size()) + ")");
+}
+
 inline SkullWeights load_weights(const std::string& path) {
     using namespace weights_detail;
     std::ifstream f(path, std::ios::binary);
@@ -134,8 +191,50 @@ inline SkullWeights load_weights(const std::string& path) {
     f.seekg(0, std::ios::beg);
 
     char magic[5] = {};
-    if (!f.read(magic, 5) || std::memcmp(magic, "SKULL", 5) != 0)
-        throw std::runtime_error("Ungueltige Gewichte-Datei (Magic 'SKULL' fehlt): " + path);
+    if (!f.read(magic, 5))
+        throw std::runtime_error("Ungueltige Gewichte-Datei (zu kurz, Magic 'SKULL'/'SKULT' fehlt): " + path);
+    const bool is_bigram      = std::memcmp(magic, "SKULL", 5) == 0;
+    const bool is_transformer = std::memcmp(magic, "SKULT", 5) == 0;
+    if (!is_bigram && !is_transformer)
+        throw std::runtime_error("Ungueltige Gewichte-Datei (Magic 'SKULL'/'SKULT' fehlt): " + path);
+
+    SkullWeights w;
+
+    if (is_transformer) {
+        uint32_t version = 0;
+        uint64_t vocab = 0, dim = 0, context = 0, heads = 0, layers = 0;
+        if (!get_u32(f, version) || !get_u64(f, vocab) || !get_u64(f, dim) ||
+            !get_u64(f, context) || !get_u64(f, heads) || !get_u64(f, layers))
+            throw std::runtime_error("Gewichte-Datei zu kurz (Header unvollstaendig): " + path);
+        if (version != 1)
+            throw std::runtime_error("Gewichte-Datei: unbekannte Format-Version " +
+                                     std::to_string(version) + " (diese Skull-Version kennt 1): " + path);
+        if (vocab == 0 || dim == 0 || context == 0 || heads == 0 || layers == 0 ||
+            vocab > MAX_VOCAB || dim > MAX_DIM || context > MAX_CONTEXT || layers > MAX_LAYERS ||
+            heads > dim || dim % heads != 0)
+            throw std::runtime_error(
+                "Gewichte-Datei beschaedigt: unplausible Groessen vocab=" + std::to_string(vocab) +
+                ", dim=" + std::to_string(dim) + ", context=" + std::to_string(context) +
+                ", heads=" + std::to_string(heads) + ", layers=" + std::to_string(layers));
+        TransformerConfig tc;
+        tc.vocab = (size_t)vocab; tc.dim = (size_t)dim; tc.context = (size_t)context;
+        tc.heads = (size_t)heads; tc.layers = (size_t)layers;
+        const uint64_t n_params = (uint64_t)tc.param_count();
+        const uint64_t expected = 5 + 4 + 5 * 8 + n_params * sizeof(double);
+        if (file_size < expected)
+            throw std::runtime_error(
+                "Gewichte-Datei abgeschnitten oder beschaedigt: erwartet mindestens " +
+                std::to_string(expected) + " Bytes, gefunden " + std::to_string(file_size));
+        w.is_transformer = true;
+        w.tcfg   = tc;
+        w.dim    = tc.dim;
+        w.vocab  = tc.vocab;
+        w.tparams.resize((size_t)n_params);
+        if (!f.read(reinterpret_cast<char*>(w.tparams.data()), (std::streamsize)(n_params * sizeof(double))))
+            throw std::runtime_error("Lesefehler in Gewichte-Datei: " + path);
+        read_tokenizer_section(f, file_size, expected, w, vocab, path);
+        return w;
+    }
 
     uint64_t dim = 0, vocab = 0;
     if (!get_u64(f, dim) || !get_u64(f, vocab))
@@ -154,7 +253,6 @@ inline SkullWeights load_weights(const std::string& path) {
             "Gewichte-Datei abgeschnitten oder beschaedigt: erwartet mindestens " +
             std::to_string(expected) + " Bytes, gefunden " + std::to_string(file_size));
 
-    SkullWeights w;
     w.dim   = (size_t)dim;
     w.vocab = (size_t)vocab;
     w.W_embed.resize((size_t)n_embed);
@@ -166,28 +264,6 @@ inline SkullWeights load_weights(const std::string& path) {
     if (!f)
         throw std::runtime_error("Lesefehler in Gewichte-Datei: " + path);
 
-    // Optionaler Tokenizer-Abschnitt
-    if (file_size > expected) {
-        char tm[4] = {};
-        if (!f.read(tm, 4) || std::memcmp(tm, "TOKB", 4) != 0)
-            throw std::runtime_error("Gewichte-Datei: unbekannte Daten nach den Gewichten: " + path);
-        uint32_t n = 0;
-        if (!get_u32(f, n) || n > MAX_MERGES)
-            throw std::runtime_error("Gewichte-Datei: Tokenizer-Abschnitt beschaedigt: " + path);
-        std::vector<std::pair<std::string, std::string>> merges;
-        merges.reserve(n);
-        for (uint32_t i = 0; i < n; ++i) {
-            std::string a, b;
-            if (!get_str(f, a) || !get_str(f, b))
-                throw std::runtime_error("Gewichte-Datei: Tokenizer-Abschnitt abgeschnitten: " + path);
-            merges.emplace_back(std::move(a), std::move(b));
-        }
-        w.bpe     = rebuild_bpe(merges);
-        w.has_bpe = true;
-        if ((uint64_t)w.bpe.vocab_size() != vocab)
-            throw std::runtime_error(
-                "Gewichte-Datei: Vokabulargroesse passt nicht zum Tokenizer (" +
-                std::to_string(vocab) + " vs " + std::to_string(w.bpe.vocab_size()) + ")");
-    }
+    read_tokenizer_section(f, file_size, expected, w, vocab, path);
     return w;
 }

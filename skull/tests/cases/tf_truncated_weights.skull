@@ -1,0 +1,2 @@
+define model M { dim = 8 }
+generate M { weights = "data/truncated_tf.dat"  prompt = "a" }

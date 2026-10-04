@@ -23,9 +23,14 @@ if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build-Typ" FORCE)
 endif()
 
+# Gemeinsame Compiler-/Linker-Flags fuer das Programm und die Tests
+# (so laufen auch die Tests mit denselben Sanitizer- und AVX2-Einstellungen).
+add_library(skull_flags INTERFACE)
+target_compile_features(skull_flags INTERFACE cxx_std_17)
+
 add_executable(skull src/main.cpp)
 target_include_directories(skull PRIVATE src)
-target_compile_features(skull PRIVATE cxx_std_17)
+target_link_libraries(skull PRIVATE skull_flags)
 set_target_properties(skull PROPERTIES CXX_EXTENSIONS OFF)
 
 # Programm immer direkt in build/ ablegen (auch bei Visual Studio, das sonst
@@ -53,19 +58,19 @@ endif()
 
 # ---- Compiler-Flags ----
 if(MSVC)
-    target_compile_options(skull PRIVATE /W3 /EHsc /MP /utf-8)
+    target_compile_options(skull_flags INTERFACE /W3 /EHsc /MP /utf-8)
     # Der Interpreter laeuft normalerweise in einem Thread mit grossem Stack
     # (src/stack.h). Dieser Haupt-Stack ist nur der Rueckfall, falls das
     # Anlegen des Threads scheitert (Windows-Standard waere nur 1 MB).
     target_link_options(skull PRIVATE /STACK:16777216)
     if(SKULL_ENABLE_AVX2 AND _skull_x86)
-        target_compile_options(skull PRIVATE /arch:AVX2)
+        target_compile_options(skull_flags INTERFACE /arch:AVX2)
         set(SKULL_AVX2_ACTIVE TRUE)
     endif()
 else()
-    target_compile_options(skull PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(skull_flags INTERFACE -Wall -Wextra -Wpedantic)
     if(SKULL_ENABLE_AVX2 AND _skull_x86)
-        target_compile_options(skull PRIVATE -mavx2 -mfma)
+        target_compile_options(skull_flags INTERFACE -mavx2 -mfma)
         set(SKULL_AVX2_ACTIVE TRUE)
     endif()
 endif()
@@ -75,11 +80,11 @@ if(SKULL_SANITIZE)
     if(MSVC)
         message(FATAL_ERROR "SKULL_SANITIZE wird nur mit gcc/clang unterstuetzt")
     endif()
-    target_compile_options(skull PRIVATE
+    target_compile_options(skull_flags INTERFACE
         -fsanitize=address,undefined -fno-sanitize-recover=undefined
         -fno-omit-frame-pointer -g -O1)
-    target_compile_definitions(skull PRIVATE _GLIBCXX_ASSERTIONS)
-    target_link_options(skull PRIVATE -fsanitize=address,undefined)
+    target_compile_definitions(skull_flags INTERFACE _GLIBCXX_ASSERTIONS)
+    target_link_options(skull_flags INTERFACE -fsanitize=address,undefined)
 endif()
 
 # ---- OpenCL (optional) ----

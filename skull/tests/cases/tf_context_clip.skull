@@ -1,0 +1,4 @@
+// context groesser als die Daten: wird reduziert, damit alle Positionen trainiert sind
+define model M { dim = 8  context = 512  heads = 2 }
+train M { data = "data/plain_data"  out = "data/tf_clip.weights"  epochs = 2  rate = 0.01 }
+generate M { weights = "data/tf_clip.weights"  prompt = "Skull"  tokens = 300  temperature = 0.8 }

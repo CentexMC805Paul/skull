@@ -24,10 +24,15 @@ update(W, 0.001)
 ## Training
 ```skull
 define model MeinLLM { dim = 64  vocab = 256 }
-train MeinLLM { data = "text.txt"  epochs = 100  rate = 0.005  batch = 8 }
+train MeinLLM { data = "text.txt"  epochs = 100  rate = 0.005  batch = 8 }   // Bigram, SGD
+
+define model Mini { dim = 32  context = 32  heads = 2  layers = 2 }
+train Mini { data = "text.txt"  out = "mini.weights"  epochs = 200  rate = 0.003  batch = 4 }  // Transformer, Adam
 ```
-- Modell: Embedding → ReLU-Hidden → Softmax, ein Token Kontext (Bigram). Kein Transformer.
-- Alle Tokens pro Epoche (oder ein Fenster mit `steps`), echtes Mini-Batch, BPE optional.
+- `context = 1` (Standard): Embedding → ReLU-Hidden → Softmax, ein Token Kontext (Bigram), SGD.
+- `context > 1`: Transformer mit kausaler Multi-Head-Attention, LayerNorm, GELU-MLP, mehreren
+  Schichten, Adam mit Gradienten-Clipping. Backward von Hand, gegen endliche Differenzen geprüft.
+- Alle Tokens pro Epoche (oder Fenster mit `steps`), echtes Mini-Batch, BPE optional.
 - Konstanter Speicherbedarf, kein Autograd-Graph im Trainingsschritt.
 - Formate: `.txt`, `.md`, `.json`, `.jsonl`, `.csv`.
 - Rechnet auf der CPU. `gpu = true` erkennt nur das Gerät.
@@ -43,8 +48,9 @@ generate MeinLLM {
 ```
 
 ## Tests
-`./build.sh --test` (oder `ctest` im Build-Verzeichnis): 36 Tests, darunter Regressionstests für
-Speicherleck, Autograd, Trainingsdaten-Limit und Generator-Randfälle. CI läuft auf Linux (gcc, clang,
+`./build.sh --test` (oder `ctest` im Build-Verzeichnis): 46 Tests, darunter Regressionstests für
+Speicherleck, Autograd, Trainingsdaten-Limit, Generator-Randfälle und der Gradiententest des
+Transformers. CI läuft auf Linux (gcc, clang,
 Sanitizer), macOS und Windows.
 
 ## Aktueller Stand der Dateien
@@ -56,7 +62,8 @@ skull/src/
   parser.h       — Parser                  (fertig)
   interpreter.h  — Ausführung              (fertig)
   stack.h        — Interpreter-Thread mit großem Stack
-  tensor.h       — Tensor-Engine + Autograd (AVX2)
+  tensor.h       — Tensor-Engine + Autograd (AVX2), für die Sprache
+  transformer.h  — Transformer (Attention) + Adam, Backward von Hand
   tokenizer.h    — Dateiformate + BPE
   weights.h      — Gewichte speichern/laden (mit Prüfung)
   trainer.h      — Training
@@ -64,12 +71,13 @@ skull/src/
   gpu.h          — OpenCL-Geräteerkennung (noch ohne Rechenarbeit)
   main.cpp       — Einstiegspunkt
 skull/experimental/ — Entwürfe (Transformer, Optimizer, CUDA, Python), nicht im Build
-skull/tests/        — ctest-Fälle
+skull/tests/        — ctest-Fälle, gradcheck.cpp (Gradiententest)
 ```
 
 ## Nächste Schritte (Priorität)
-1. Modell mit Kontext > 1 Token: erst eine Schicht Attention mit Gradiententest, dann Transformer
-   (Ansatzpunkt: `experimental/layers.h`, siehe dort).
-2. Sprache: Listen, Strings indizieren.
-3. GPU-Rechnen: die OpenCL-Kernel in `gpu.h` an den Trainer anbinden und gegen die CPU-Version testen.
-4. Gewichte-Format versionieren, bevor weitere Schichten dazukommen.
+1. Geschwindigkeit des Transformers: mehrere Threads über die Sequenzen eines Batches, `float`
+   statt `double`, gepufferte Matrixmultiplikation.
+2. Generierung: Top-k/Top-p-Sampling, KV-Cache (heute wird bei jedem Token der ganze Kontext neu gerechnet).
+3. Sprache: Listen, Strings indizieren.
+4. GPU-Rechnen: die OpenCL-Kernel in `gpu.h` an den Transformer anbinden und gegen die CPU prüfen.
+5. Validierungsdaten und Checkpoints während des Trainings.

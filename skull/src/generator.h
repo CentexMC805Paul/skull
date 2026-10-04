@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include "tensor.h"
 #include "weights.h"
+#include "transformer.h"
 #include "version.h"
 
 // ============================================================
@@ -38,6 +39,9 @@ struct GenerateConfig {
     // Massgeblich sind immer die Werte aus der Datei.
     size_t      dim          = 0;
     size_t      vocab        = 0;
+    size_t      context      = 0;
+    size_t      heads        = 0;
+    size_t      layers       = 0;
 };
 
 // Softmax mit Temperature (temperature muss > 0 sein)
@@ -124,14 +128,33 @@ inline void skull_generate(const GenerateConfig& cfg) {
     if (!std::isfinite(cfg.temperature))
         throw std::runtime_error("generate: 'temperature' muss eine endliche Zahl sein");
 
-    std::cout << "[Skull] Gewichte geladen: " << w.dim << "d, vocab=" << w.vocab
-              << (w.has_bpe ? ", BPE-Tokenizer" : ", Zeichen-Tokenizer") << "\n";
+    std::cout << "[Skull] Gewichte geladen: " << w.dim << "d, vocab=" << w.vocab;
+    if (w.is_transformer)
+        std::cout << ", Transformer (" << w.tcfg.layers << " Schicht(en), " << w.tcfg.heads
+                  << " Koepfe, Kontext " << w.tcfg.context << ")";
+    else
+        std::cout << ", Bigram";
+    std::cout << (w.has_bpe ? ", BPE-Tokenizer" : ", Zeichen-Tokenizer") << "\n";
     if (cfg.dim   != 0 && cfg.dim   != w.dim)
         std::cout << "[WARNUNG] Modell definiert dim=" << cfg.dim
                   << ", die Gewichte haben dim=" << w.dim << " (Gewichte gelten)\n";
     if (cfg.vocab != 0 && !w.has_bpe && cfg.vocab != w.vocab)
         std::cout << "[WARNUNG] Modell definiert vocab=" << cfg.vocab
                   << ", die Gewichte haben vocab=" << w.vocab << " (Gewichte gelten)\n";
+    if (w.is_transformer) {
+        if (cfg.context != 0 && cfg.context != w.tcfg.context)
+            std::cout << "[WARNUNG] Modell definiert context=" << cfg.context
+                      << ", die Gewichte haben context=" << w.tcfg.context << " (Gewichte gelten)\n";
+        if (cfg.heads != 0 && cfg.heads != w.tcfg.heads)
+            std::cout << "[WARNUNG] Modell definiert heads=" << cfg.heads
+                      << ", die Gewichte haben heads=" << w.tcfg.heads << " (Gewichte gelten)\n";
+        if (cfg.layers != 0 && cfg.layers != w.tcfg.layers)
+            std::cout << "[WARNUNG] Modell definiert layers=" << cfg.layers
+                      << ", die Gewichte haben layers=" << w.tcfg.layers << " (Gewichte gelten)\n";
+    } else if (cfg.context > 1) {
+        std::cout << "[WARNUNG] Modell definiert context=" << cfg.context
+                  << ", die Gewichte sind aber ein Bigram-Modell (Kontext 1)\n";
+    }
     std::cout << "\n";
 
     // Prompt in Token-IDs umwandeln
@@ -149,12 +172,32 @@ inline void skull_generate(const GenerateConfig& cfg) {
 
     std::mt19937 rng(std::random_device{}());
 
+    // Transformer: Verlauf der Token + Modell
+    std::unique_ptr<Transformer> tf;
+    std::vector<int> history;
+    if (w.is_transformer) {
+        tf = std::make_unique<Transformer>(w.tcfg);
+        tf->params = w.tparams;
+        history = prompt_ids;
+        if (history.empty()) history.push_back(current);
+    }
+
     std::cout << "--- Ausgabe ---\n";
     std::cout << cfg.prompt;
     std::cout.flush();
 
     for (int t = 0; t < cfg.tokens; ++t) {
-        FlatVec logits = forward_token(current, w);
+        FlatVec logits;
+        if (tf) {
+            // die letzten `context` Token sehen
+            const size_t ctx = w.tcfg.context;
+            const size_t n   = std::min(history.size(), ctx);
+            const std::vector<double>& all = tf->forward(&history[history.size() - n], n);
+            logits.assign(all.begin() + (std::ptrdiff_t)((n - 1) * w.vocab),
+                          all.begin() + (std::ptrdiff_t)(n * w.vocab));
+        } else {
+            logits = forward_token(current, w);
+        }
 
         int next;
         if (cfg.temperature > 0.0) {
@@ -169,6 +212,7 @@ inline void skull_generate(const GenerateConfig& cfg) {
         std::cout.flush();
 
         current = next;
+        if (tf) history.push_back(next);
     }
 
     std::cout << "\n--- Ende ---\n\n";

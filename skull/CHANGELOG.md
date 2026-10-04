@@ -46,14 +46,25 @@ size as before; most of the "v1.0.0" feature list below was announced but never 
 
 ### ➕ Added
 
+- **Transformer model** (`context > 1`): causal multi-head self-attention, pre-LayerNorm, GELU MLP,
+  any number of layers, hand-written backward pass (`src/transformer.h`), Adam with gradient
+  clipping. Selected via the model fields `context`, `heads`, `layers`. The backward pass is
+  verified against finite differences for every parameter (`tests/gradcheck.cpp`; mutation-tested:
+  it catches a missing attention scale, wrong LayerNorm/GELU derivatives, a missing residual
+  path and a removed causal mask). New weights format `SKULT` (versioned, validated on load);
+  the bigram format `SKULL` stays readable.
+- `train { out = "..." }` sets the weights path; `examples/transformer.skull`.
 - Language: `else if`, `and` / `or` / `not` (also `!`) with short-circuit evaluation, and `%`
   (Python semantics: the result takes the sign of the divisor).
-- Regression tests (`ctest`, 36 cases) for all of the above, run by GitHub Actions on Linux
+- Regression tests (`ctest`, 46 cases) for all of the above, run by GitHub Actions on Linux
   (gcc, clang, AddressSanitizer/UBSan), macOS and Windows. Run locally with `./build.sh --test`.
 - Builtin `live_tensors()` (number of live tensors; used by the leak test).
 - `-DSKULL_SANITIZE=ON` build option.
 
 ### 🔄 Changed
+
+- Tests are self-contained: each training test writes its own weights file (they used to share
+  files, which could make `ctest -j` racy), and the examples that share one file are serialised.
 
 - `gpu = true` now says openly that training still runs on the CPU (it only detects the device).
 - `examples/test.skull` uses a small model and the bundled data instead of a missing file.

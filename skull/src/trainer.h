@@ -15,26 +15,34 @@
 #include "tokenizer.h"
 #include "gpu.h"
 #include "weights.h"
+#include "transformer.h"
 #include "version.h"
 
 // ============================================================
 //  SKULL TRAINER
 //
-//  Modell: Embedding -> Hidden (ReLU) -> Softmax-Ausgabe.
-//  Es sieht pro Schritt genau EIN Token (das vorige) und sagt das
-//  naechste voraus, ist also ein neuronales Bigram-Modell.
+//  Zwei Modelle, gewaehlt ueber das Feld `context`:
 //
-//  Forward und Backward sind von Hand ausgeschrieben und arbeiten
-//  direkt auf Vektoren (kein Autograd-Graph pro Schritt).
+//  context = 1 (Standard): Bigram-Modell. Embedding -> Hidden (ReLU) ->
+//    Softmax. Es sieht pro Schritt genau EIN Token (das vorige) und sagt
+//    das naechste voraus. Training mit SGD (`rate` = SGD-Lernrate).
+//
+//  context > 1: Transformer mit kausaler Attention (src/transformer.h).
+//    Sieht bis zu `context` vorige Token. Felder heads, layers, dim.
+//    Training mit Adam (`rate` = Adam-Lernrate, typisch 0.001 - 0.01).
+//
+//  Forward und Backward sind in beiden Faellen von Hand ausgeschrieben und
+//  arbeiten direkt auf Vektoren (kein Autograd-Graph pro Schritt).
 //  Das haelt den Speicher konstant und die Schritte schnell.
 //
 //  Optionen (train { ... }):
-//    data, epochs, rate, batch, dim, vocab, steps, bpe, bpe_vocab,
-//    gpu, prefer_amd
+//    data, out, epochs, rate, batch, dim, vocab, steps, context, heads, layers,
+//    bpe, bpe_vocab, gpu, prefer_amd
+//  out = Pfad der Gewichte-Datei (Standard: data + ".weights").
 //  steps = 0 (Standard): jede Epoche geht durch ALLE Tokens.
-//  steps > 0: pro Epoche ein zufaelliges zusammenhaengendes Fenster
-//  dieser Laenge (so wird bei grossen Dateien nach und nach alles
-//  gesehen, ohne dass eine Epoche ewig dauert).
+//  steps > 0: pro Epoche nur so viele Token-Schritte (zufaellige Fenster),
+//  damit bei grossen Dateien nach und nach alles gesehen wird, ohne dass
+//  eine Epoche ewig dauert.
 // ============================================================
 
 inline void softmax_inplace(FlatVec& v) {
@@ -71,17 +79,125 @@ inline void outer_add(FlatVec& M, size_t cols, const FlatVec& u, const FlatVec& 
 
 struct TrainConfig {
     std::string data_path  = "";
+    std::string out_path   = "";      // Ziel der Gewichte; leer = data + ".weights"
     int         epochs     = 10;
     double      rate       = 0.001;
     int         batch      = 1;       // Tokens pro Gewichts-Update (Gradient wird gemittelt)
     size_t      dim        = 64;
     size_t      vocab      = 256;
     size_t      steps      = 0;       // 0 = alle Tokens pro Epoche
+    size_t      context    = 1;       // 1 = Bigram-Modell, > 1 = Transformer mit diesem Kontext
+    size_t      heads      = 0;       // nur Transformer (0 = Standard: 2)
+    size_t      layers     = 0;       // nur Transformer (0 = Standard: 1)
     bool        use_bpe    = false;   // BPE-Tokenisierung aktivieren
     int         bpe_vocab  = 1000;    // BPE Ziel-Vokabular
     bool        use_gpu    = false;   // GPU via OpenCL (derzeit nur initialisiert)
     bool        prefer_amd = false;   // AMD GPU bevorzugen
 };
+
+inline std::string weights_path_for(const TrainConfig& cfg) {
+    return cfg.out_path.empty() ? cfg.data_path + ".weights" : cfg.out_path;
+}
+
+// Transformer-Training: zufaellige Fenster der Laenge `context`, Adam, Mini-Batch aus mehreren Fenstern.
+inline void train_transformer(const TrainConfig& cfg, const std::vector<int>& ids,
+                              size_t vocab, const BPETokenizer* bpe) {
+    using namespace weights_detail;
+    if (cfg.context > MAX_CONTEXT)
+        throw std::runtime_error("train: 'context' darf hoechstens " + std::to_string(MAX_CONTEXT) + " sein");
+    if (cfg.layers > MAX_LAYERS)
+        throw std::runtime_error("train: 'layers' darf hoechstens " + std::to_string(MAX_LAYERS) + " sein");
+
+    const size_t n_pairs = ids.size() - 1;
+    TransformerConfig tc;
+    tc.vocab   = vocab;
+    tc.dim     = cfg.dim;
+    tc.context = std::min(cfg.context, n_pairs);
+    tc.heads   = cfg.heads  ? cfg.heads  : 2;
+    tc.layers  = cfg.layers ? cfg.layers : 1;
+    try {
+        tc.validate();
+    } catch (const std::runtime_error& e) {
+        throw std::runtime_error(std::string("train: ") + e.what());
+    }
+    if (tc.context < cfg.context)
+        std::cout << "[Skull] Hinweis: context wurde auf " << tc.context
+                  << " reduziert (die Daten haben nur " << n_pairs << " Trainingspaare)\n";
+
+    const size_t n_params = tc.param_count();
+    const size_t MAX_PARAMS = 200u * 1000u * 1000u;
+    if (n_params > MAX_PARAMS)
+        throw std::runtime_error("train: Modell zu gross (" + std::to_string(n_params) +
+                                 " Parameter, maximal " + std::to_string(MAX_PARAMS) + ")");
+
+    const size_t T                = tc.context;
+    const size_t pairs_per_epoch  = (cfg.steps > 0 && cfg.steps < n_pairs) ? cfg.steps : n_pairs;
+    const size_t seqs_per_epoch   = (pairs_per_epoch + T - 1) / T;
+    const size_t batch            = (size_t)cfg.batch;
+    const size_t updates_per_epoch = (seqs_per_epoch + batch - 1) / batch;
+
+    std::cout << "[Skull] Modell:     Transformer (" << tc.layers << " Schicht(en), " << tc.heads
+              << " Kopf/Koepfe, Kontext " << T << ")\n";
+    std::cout << "[Skull] Tokens:     " << ids.size() << "\n";
+    std::cout << "[Skull] Vokabular:  " << vocab << "\n";
+    std::cout << "[Skull] Sequenzen/Epoche: " << seqs_per_epoch << " (je " << T << " Token), "
+              << updates_per_epoch << " Update(s)\n";
+    std::cout << "[Skull] Parameter:  " << n_params << "\n\n";
+
+    Transformer model(tc);
+    model.init(42);
+    Adam opt(model.params.size(), cfg.rate, 1.0);
+    std::mt19937 rng(12345);
+    std::uniform_int_distribution<size_t> start_dist(0, n_pairs - T);
+    auto t_start = std::chrono::high_resolution_clock::now();
+
+    for (int epoch = 1; epoch <= cfg.epochs; ++epoch) {
+        double epoch_loss = 0.0;
+        size_t seqs_done = 0;
+        for (size_t u = 0; u < updates_per_epoch; ++u) {
+            const size_t n_in = std::min(batch, seqs_per_epoch - seqs_done);
+            model.zero_grads();
+            for (size_t b = 0; b < n_in; ++b) {
+                const size_t s = start_dist(rng);
+                epoch_loss += model.step_loss_and_grad(&ids[s], &ids[s + 1], T);
+            }
+            if (n_in > 1) {
+                const double inv = 1.0 / (double)n_in;
+                for (auto& g : model.grads) g *= inv;
+            }
+            opt.step(model.params, model.grads);
+            seqs_done += n_in;
+        }
+        const double avg_loss = epoch_loss / (double)seqs_done;
+        if (!std::isfinite(avg_loss))
+            throw std::runtime_error(
+                "train: Loss ist nicht endlich (Training divergiert) - 'rate' verkleinern");
+
+        if (epoch == 1 || epoch % 10 == 0 || epoch == cfg.epochs) {
+            double secs = std::chrono::duration<double>(
+                std::chrono::high_resolution_clock::now() - t_start).count();
+            std::cout << "Epoche " << epoch << "/" << cfg.epochs
+                      << "  |  Loss: " << avg_loss
+                      << "  |  Zeit: " << secs << "s\n";
+        }
+    }
+
+    double total = std::chrono::duration<double>(
+        std::chrono::high_resolution_clock::now() - t_start).count();
+    std::cout << "\n[Skull] Training abgeschlossen! " << total << "s\n";
+    std::cout << "[Skull] Parameter: " << n_params << "\n";
+
+    SkullWeights w;
+    w.is_transformer = true;
+    w.tcfg   = tc;
+    w.dim    = tc.dim;
+    w.vocab  = tc.vocab;
+    w.tparams = model.params;
+    if (bpe) { w.has_bpe = true; w.bpe = *bpe; }
+    std::string wp = weights_path_for(cfg);
+    save_weights(wp, w);
+    std::cout << "[Skull] Gewichte gespeichert: " << wp << "\n\n";
+}
 
 inline void skull_train(const TrainConfig& cfg) {
     // ---- Eingaben pruefen ----
@@ -97,6 +213,11 @@ inline void skull_train(const TrainConfig& cfg) {
         throw std::runtime_error("train: 'dim' muss zwischen 1 und 65536 liegen");
     if (cfg.vocab < 1 || cfg.vocab > weights_detail::MAX_VOCAB)
         throw std::runtime_error("train: 'vocab' muss zwischen 1 und 16777216 liegen");
+    if (cfg.context < 1)
+        throw std::runtime_error("train: 'context' muss >= 1 sein (1 = Bigram, > 1 = Transformer)");
+    if (cfg.context <= 1 && (cfg.heads != 0 || cfg.layers != 0))
+        std::cout << "[WARNUNG] 'heads' und 'layers' wirken nur mit context > 1 (Transformer); "
+                     "ohne context trainiert Skull das Bigram-Modell\n";
 
     std::cout << "\n";
     std::cout << "========================================\n";
@@ -105,8 +226,9 @@ inline void skull_train(const TrainConfig& cfg) {
     std::cout << "  Datei:    " << cfg.data_path << "\n";
     std::cout << "  Dim:      " << cfg.dim       << "\n";
     std::cout << "  Epochen:  " << cfg.epochs    << "\n";
-    std::cout << "  Rate:     " << cfg.rate      << "\n";
+    std::cout << "  Rate:     " << cfg.rate      << (cfg.context > 1 ? " (Adam)" : " (SGD)") << "\n";
     std::cout << "  Batch:    " << cfg.batch     << "\n";
+    std::cout << "  Modell:   " << (cfg.context > 1 ? "Transformer" : "Bigram") << "\n";
     std::cout << "  BPE:      " << (cfg.use_bpe ? "ja" : "nein") << "\n";
     std::cout << "  Rechnen:  CPU";
 #if SKULL_AVX2
@@ -143,10 +265,16 @@ inline void skull_train(const TrainConfig& cfg) {
         std::cout << "[Skull] Hinweis: " << clipped << " Tokens lagen ausserhalb von vocab="
                   << vocab << " und wurden auf ID 0 abgebildet\n";
 
+    if (cfg.context > 1) {
+        train_transformer(cfg, ids, vocab, cfg.use_bpe ? &tok_result.bpe : nullptr);
+        return;
+    }
+
     const size_t n_pairs        = ids.size() - 1;
     const size_t steps_per_ep   = (cfg.steps > 0 && cfg.steps < n_pairs) ? cfg.steps : n_pairs;
     const size_t params         = vocab * dim + dim * dim + dim * vocab;
 
+    std::cout << "[Skull] Modell:     Bigram (1 Token Kontext)\n";
     std::cout << "[Skull] Tokens:     " << ids.size() << "\n";
     std::cout << "[Skull] Vokabular:  " << vocab << "\n";
     std::cout << "[Skull] Schritte/Epoche: " << steps_per_ep << "\n";
@@ -279,7 +407,7 @@ inline void skull_train(const TrainConfig& cfg) {
     std::cout << "[Skull] Parameter: " << params << "\n";
 
     // ---- Gewichte speichern ----
-    std::string wp = cfg.data_path + ".weights";
+    std::string wp = weights_path_for(cfg);
     save_weights(wp, w);
     std::cout << "[Skull] Gewichte gespeichert: " << wp << "\n\n";
 }

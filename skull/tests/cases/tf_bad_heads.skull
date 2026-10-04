@@ -1,0 +1,2 @@
+define model M { dim = 10  context = 8  heads = 4 }
+train M { data = "data/repeat.txt"  out = "data/never.weights"  epochs = 1 }

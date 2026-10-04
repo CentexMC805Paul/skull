@@ -1,0 +1,30 @@
+// transformer.skull - Ein Modell mit Attention (Transformer)
+//
+// Mit context > 1 sieht das Modell mehrere vorige Zeichen gleichzeitig und kann
+// dadurch ganze Wörter und Satzteile lernen - das Bigram-Modell (context = 1,
+// Standard) kennt nur das letzte Zeichen.
+//
+// Training und Generierung dauern auf der CPU wenige Sekunden.
+
+define model Mini {
+    dim     = 32     // Breite des Modells
+    vocab   = 256    // ein Token pro Byte
+    context = 32     // so viele Zeichen sieht das Modell gleichzeitig (> 1 = Transformer)
+    heads   = 2      // Attention-Köpfe (dim muss durch heads teilbar sein)
+    layers  = 2      // Anzahl Transformer-Schichten
+}
+
+train Mini {
+    data   = "examples/training_data.txt"
+    out    = "examples/transformer.weights"   // eigene Datei, überschreibt die anderen Beispiele nicht
+    epochs = 200
+    rate   = 0.003        // Lernrate für Adam
+    batch  = 4            // Sequenzen pro Update
+}
+
+generate Mini {
+    weights     = "examples/transformer.weights"
+    prompt      = "Skull ist"
+    tokens      = 120
+    temperature = 0.5     // 0 = immer das wahrscheinlichste Zeichen
+}

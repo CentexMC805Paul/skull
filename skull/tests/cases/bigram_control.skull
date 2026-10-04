@@ -1,0 +1,4 @@
+// Kontrolle zu tf_learns_context: dasselbe Training mit dem Bigram-Modell (context = 1)
+define model M { dim = 32 }
+train M { data = "data/repeat.txt"  out = "data/bigram_control.weights"  epochs = 300  rate = 0.05 }
+generate M { weights = "data/bigram_control.weights"  prompt = "das ist "  tokens = 40  temperature = 0 }

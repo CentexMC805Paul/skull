@@ -6,14 +6,25 @@
 
 ## ⚠️ Was Skull heute ist (und was nicht)
 
-Skull ist eine kleine Programmiersprache mit eingebautem Trainer. Das **Modell** ist bewusst winzig:
-Embedding → Hidden-Schicht (ReLU) → Softmax. Es sieht pro Schritt **nur das vorige Token** und
-sagt das nächste voraus (ein neuronales Bigram-Modell). Das reicht, um Training, Verlust und
-Textgenerierung zu verstehen — aber **nicht**, um sinnvollen Text zu schreiben. Rechnen tut Skull
-auf der **CPU** (AVX2, wenn vorhanden).
+Skull ist eine kleine Programmiersprache mit eingebautem Trainer für **winzige** Sprachmodelle.
+Es gibt zwei Modelle, gewählt über das Feld `context`:
 
-Noch **nicht** vorhanden: Attention/Transformer, mehrere Schichten, GPU-Training, Python-Bindings.
-Entwürfe dafür liegen in [`experimental/`](experimental/README.md) und sind nicht Teil des Builds.
+| Modell | `context` | Was es sieht | Training |
+|--------|-----------|--------------|----------|
+| **Bigram** (Standard) | 1 | nur das vorige Token | SGD |
+| **Transformer** mit Attention | > 1 | bis zu `context` vorige Token | Adam |
+
+Beide trainieren und generieren auf der **CPU** (AVX2, wenn vorhanden). Der Transformer
+(kausale Multi-Head-Attention, LayerNorm, GELU-MLP, mehrere Schichten) lernt auf kleinen Texten
+Wörter und Satzteile; das Bigram-Modell erzeugt dagegen nur Zufallsbuchstaben. Beispiel
+(`tests/cases/tf_learns_context.skull`): Auf „das ist ein test. “ wiederholt trainiert, setzt der
+Transformer den Satz fehlerfrei fort, das Bigram-Modell bleibt bei „t. t. t.“ hängen.
+
+Das sind **Spielzeugmodelle** (einige zehntausend Parameter, trainiert in Sekunden), gut zum
+Verstehen von Training, Verlust und Generierung — nicht für echten Text in guter Qualität.
+
+Noch **nicht** vorhanden: GPU-Training, Python-Bindings, Gewichte-Austausch mit anderen Frameworks.
+Entwürfe für GPU/Python liegen in [`experimental/`](experimental/README.md) und sind nicht Teil des Builds.
 
 ---
 
@@ -85,7 +96,8 @@ Beim Training wird neben die Datendatei eine `.weights`-Datei geschrieben
 |----------|-------------|--------|
 | `hello.skull` | Grundlagen (Variablen, Funktionen, Schleifen) | `./build/skull examples/hello.skull` |
 | `tensor_test.skull` | Tensoren, Backpropagation | `./build/skull examples/tensor_test.skull` |
-| `train.skull` | Einfaches KI-Training | `./build/skull examples/train.skull` |
+| `train.skull` | Einfaches KI-Training (Bigram) | `./build/skull examples/train.skull` |
+| `transformer.skull` | Modell mit Attention (Transformer) trainieren und Text erzeugen | `./build/skull examples/transformer.skull` |
 | `generate.skull` | Trainieren und Text generieren | `./build/skull examples/generate.skull` |
 | `format_test.skull` | Trainieren mit Markdown und JSONL | `./build/skull examples/format_test.skull` |
 
@@ -152,7 +164,26 @@ train MeinModell {
 }
 ```
 
-### 5. Text generieren
+### 5. Modell mit Attention (Transformer)
+```skull
+define model Mini {
+    dim     = 32    // Breite
+    context = 32    // so viele Zeichen sieht das Modell gleichzeitig (> 1 = Transformer)
+    heads   = 2     // Attention-Köpfe (dim muss durch heads teilbar sein)
+    layers  = 2     // Anzahl Schichten
+}
+train Mini {
+    data = "text.txt"
+    out  = "mini.weights"   // optional: Zielpfad der Gewichte
+    epochs = 200
+    rate   = 0.003          // beim Transformer die Adam-Lernrate
+    batch  = 4              // Sequenzen pro Update
+}
+```
+Mehr dazu in `examples/transformer.skull`. Ist die Datei kürzer als `context`, wird `context`
+verkleinert (mit Hinweis).
+
+### 6. Text generieren
 ```skull
 generate MeinModell {
     weights     = "mein_text.txt.weights"  // Trainierte Gewichte
@@ -161,8 +192,9 @@ generate MeinModell {
     temperature = 0.8                      // Kreativität; 0 = immer das wahrscheinlichste Token
 }
 ```
-Maßgeblich sind Größe und Tokenizer aus der Gewichte-Datei; passt `dim` im `define model`
-nicht dazu, warnt Skull.
+Maßgeblich sind Modellart, Größe und Tokenizer aus der Gewichte-Datei; passt `dim`, `context`,
+`heads` oder `layers` im `define model` nicht dazu, warnt Skull. Beim Transformer sieht das Modell
+beim Generieren immer die letzten `context` Token.
 
 ---
 
@@ -173,16 +205,19 @@ nicht dazu, warnt Skull.
 | Feld | Standard | Bedeutung |
 |------|----------|-----------|
 | `data` | – | Pfad zur Trainingsdatei (String, Pflicht) |
+| `out` | `data` + `.weights` | Zielpfad der Gewichte-Datei |
 | `epochs` | 10 | Durchläufe über die Daten |
-| `rate` | 0.001 | Lernrate |
-| `batch` | 1 | Tokens pro Gewichts-Update (Gradient wird gemittelt) |
-| `steps` | 0 | 0 = jede Epoche geht durch **alle** Tokens; sonst ein zufälliges Fenster dieser Länge pro Epoche (für große Dateien) |
+| `rate` | 0.001 | Lernrate (Bigram: SGD, Transformer: Adam) |
+| `batch` | 1 | Bigram: Tokens pro Update; Transformer: Sequenzen pro Update (Gradient wird gemittelt) |
+| `steps` | 0 | 0 = jede Epoche geht durch **alle** Tokens; sonst nur so viele Token-Schritte (zufällige Fenster) pro Epoche, für große Dateien |
 | `dim`, `vocab` | 64, 256 | Auch im `define model` setzbar |
+| `context` | 1 | 1 = Bigram, > 1 = Transformer mit diesem Kontext (max. 8192) |
+| `heads`, `layers` | 2, 1 | Nur Transformer. `dim` muss durch `heads` teilbar sein |
 | `bpe`, `bpe_vocab` | false, 1000 | Byte-Pair-Encoding statt Bytes als Token. Der Tokenizer wird in der Gewichte-Datei mitgespeichert, `generate` benutzt ihn automatisch |
 | `gpu`, `prefer_amd` | false | Zeigt das OpenCL-Gerät an. **Das Training läuft trotzdem auf der CPU** (Hinweis wird ausgegeben) |
 
-Unbekannte Felder (z. B. Tippfehler) und noch nicht unterstützte (`layers`, `heads`) werden mit
-einer Warnung gemeldet statt still ignoriert.
+Unbekannte Felder (z. B. Tippfehler) und `heads`/`layers` ohne `context > 1` werden mit einer
+Warnung gemeldet statt still ignoriert.
 
 ### Fehler
 Fehler (fehlende Datei, kaputte Gewichte, falscher Typ …) beenden Skull mit einer Meldung

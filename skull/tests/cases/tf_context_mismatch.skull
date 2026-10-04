@@ -1,0 +1,5 @@
+// Modell-Definition passt nicht zu den Gewichten: Warnung, die Gewichte gelten
+define model Train { dim = 8  context = 8  heads = 2 }
+train Train { data = "data/repeat.txt"  out = "data/mismatch.weights"  epochs = 1  rate = 0.01 }
+define model Other { dim = 8  context = 4  heads = 1  layers = 3 }
+generate Other { weights = "data/mismatch.weights"  prompt = "das"  tokens = 5  temperature = 0 }

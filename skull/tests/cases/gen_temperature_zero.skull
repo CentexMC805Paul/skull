@@ -1,4 +1,4 @@
 // temperature = 0 ist greedy (frueher: NaN und leere Ausgabe)
 define model M { dim = 16 }
-train M { data = "data/repeat.txt"  epochs = 30  rate = 0.05 }
-generate M { weights = "data/repeat.txt.weights"  prompt = "das "  tokens = 12  temperature = 0 }
+train M { data = "data/repeat.txt"  out = "data/t0.weights"  epochs = 30  rate = 0.05 }
+generate M { weights = "data/t0.weights"  prompt = "das "  tokens = 12  temperature = 0 }

@@ -1,2 +1,2 @@
 define model M { dim = 16 }
-train M { data = "data/late.txt"  epochs = 3  rate = 0.05  steps = 100 }
+train M { data = "data/late.txt"  out = "data/steps.weights"  epochs = 3  rate = 0.05  steps = 100 }

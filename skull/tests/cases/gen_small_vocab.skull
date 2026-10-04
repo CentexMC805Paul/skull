@@ -1,4 +1,4 @@
 // vocab < 256 und Prompt-Zeichen ausserhalb des Vokabulars (frueher: Lesen ausserhalb des Speichers)
 define model M { dim = 8  vocab = 100 }
-train M { data = "data/repeat.txt"  epochs = 2  rate = 0.01 }
-generate M { weights = "data/repeat.txt.weights"  prompt = "zzz"  tokens = 20  temperature = 0.8 }
+train M { data = "data/repeat.txt"  out = "data/small.weights"  epochs = 2  rate = 0.01 }
+generate M { weights = "data/small.weights"  prompt = "zzz"  tokens = 20  temperature = 0.8 }

@@ -1,4 +1,4 @@
 // Frueher trainierte Skull nur die ersten 500 Zeichen. In late.txt steht "xy" erst danach.
 define model M { dim = 32  vocab = 256 }
-train M { data = "data/late.txt"  epochs = 20  rate = 0.05 }
-generate M { weights = "data/late.txt.weights"  prompt = "x"  tokens = 24  temperature = 0 }
+train M { data = "data/late.txt"  out = "data/all.weights"  epochs = 20  rate = 0.05 }
+generate M { weights = "data/all.weights"  prompt = "x"  tokens = 24  temperature = 0 }
