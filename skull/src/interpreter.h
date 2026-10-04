@@ -502,6 +502,14 @@ private:
                     ": last_val_loss(): das letzte train hatte keine Validierung (val > 0 und genug Daten noetig)");
             return SkullValue(last_train_.val_loss);
         }
+        if (name == "last_seconds") {
+            if (!has_train_) throw std::runtime_error("Zeile " + std::to_string(line) + ": last_seconds(): es lief noch kein train");
+            return SkullValue(last_train_.seconds);
+        }
+        if (name == "last_params") {
+            if (!has_train_) throw std::runtime_error("Zeile " + std::to_string(line) + ": last_params(): es lief noch kein train");
+            return SkullValue((double)last_train_.params);
+        }
         if (name == "last_best_epoch") {
             if (!has_train_) throw std::runtime_error("Zeile " + std::to_string(line) + ": last_best_epoch(): es lief noch kein train");
             return SkullValue((double)last_train_.best_epoch);

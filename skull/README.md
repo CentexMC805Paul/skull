@@ -314,7 +314,8 @@ das Training nach 5 Epochen ohne Verbesserung ab.
 
 Im Skript lassen sich die Ergebnisse abfragen, z. B. für einen Vergleich mehrerer Läufe:
 `last_loss()` (Trainings-Loss der letzten Epoche), `last_val_loss()` (Val-Loss des gespeicherten
-Modells) und `last_best_epoch()`.
+Modells), `last_best_epoch()`, `last_seconds()` (Rechenzeit der Epochen) und `last_params()` (Anzahl der
+Parameter). Beispiele für ganze Messreihen: [`../skull-research/experiments/`](../skull-research/experiments/README.md).
 
 Unbekannte Felder (z. B. Tippfehler) und `heads`/`layers` ohne `context > 1` werden mit einer
 Warnung gemeldet statt still ignoriert.

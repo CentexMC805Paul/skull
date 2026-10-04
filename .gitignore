@@ -45,3 +45,6 @@ build/
 
 # Arbeitskopien paralleler Hilfsagenten (nie einchecken)
 .claude/worktrees/
+
+# Trainingstext fuer das Tutorial und die Experimente (wird per curl geholt, siehe docs/TUTORIAL.md)
+shakespeare.txt

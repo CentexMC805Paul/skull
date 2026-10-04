@@ -1,0 +1,74 @@
+// ============================================================
+//  Experiment 02: Wie stark schwankt das Ergebnis allein durch den Zufall?
+//
+//  Frage:    Ab welchem Unterschied im Val-Loss ist eine Aenderung echt?
+//  Aufbau:   Exakt dieselbe Einstellung, nur `seed` aendert sich (Startgewichte und
+//            Reihenfolge der Trainingsfenster).
+//  Ergebnis: Mittelwert und Spannweite. Unterschiede zwischen zwei Einstellungen, die
+//            kleiner sind als die Spannweite hier, sind NICHT belastbar.
+//
+//  Starten (im Ordner skull/, dort liegt auch shakespeare.txt):
+//      ./build/skull ../skull-research/experiments/02_seed_rauschen.skull
+// ============================================================
+
+// ---- Einstellungen: hier aendern ----
+define daten   = "shakespeare.txt"
+define seeds   = [1, 2, 3, 4, 5]
+define rate_   = 0.003
+define epochs  = 10
+define fenster = 50000
+
+define func pad(text, breite) {
+    zeile = str(text)
+    while len(zeile) < breite { zeile = zeile + " " }
+    return zeile
+}
+define func runde(x, stellen) {
+    faktor = pow(10, stellen)
+    return round(x * faktor) / faktor
+}
+
+define model Mini { dim = 64  context = 64  heads = 4  layers = 2 }
+define werte = []
+
+for s in seeds {
+    train Mini {
+        data   = daten
+        out    = "experiment.weights"
+        epochs = epochs
+        steps  = fenster
+        rate   = rate_
+        batch  = 8
+        seed   = s
+    }
+    push(werte, last_val_loss())
+    print("-> seed", s, ": Val-Loss", runde(last_val_loss(), 4))
+}
+
+// ---- Auswertung ----
+summe = 0
+kleinster = werte[0]
+groesster = werte[0]
+for w in werte {
+    summe = summe + w
+    if w < kleinster { kleinster = w }
+    if w > groesster { groesster = w }
+}
+mittel = summe / len(werte)
+abweichung = 0
+for w in werte { abweichung = abweichung + (w - mittel) * (w - mittel) }
+abweichung = sqrt(abweichung / (len(werte) - 1))
+
+print("")
+print("==================== ERGEBNIS: Seed-Rauschen ====================")
+print(pad("Seed", 8) + "Val-Loss")
+for i in 0..(len(werte) - 1) {
+    print(pad(seeds[i], 8) + str(runde(werte[i], 4)))
+}
+print("")
+print("Mittelwert:      ", runde(mittel, 4))
+print("Standardabw.:    ", runde(abweichung, 4))
+print("kleinster/groesster:", runde(kleinster, 4), "/", runde(groesster, 4))
+print("Spannweite:      ", runde(groesster - kleinster, 4))
+print("")
+print("Faustregel: Unterschiede unter ungefaehr", runde(2 * abweichung, 3), "(zwei Standardabweichungen) sind Rauschen.")

@@ -1,0 +1,22 @@
+// last_params() und last_seconds(): Parameterzahl und Rechenzeit des letzten train (fuer Messreihen)
+fails = 0
+define func check(name, cond) {
+    if not cond {
+        print("FALSCH:", name)
+        fails = fails + 1
+    }
+}
+
+// Bigram: vocab*dim + dim*dim + dim*vocab = 256*16 + 16*16 + 16*256
+define model B { dim = 16 }
+train B { data = "data/late.txt"  out = "data/res_builtins_b.weights"  epochs = 2  rate = 0.05 }
+check("bigram params", last_params() == 8448)
+check("bigram seconds", last_seconds() >= 0 and last_seconds() < 60)
+
+// Transformer (dim 32, context 32, 2 Koepfe, 2 Schichten)
+define model T { dim = 32  context = 32  heads = 2  layers = 2 }
+train T { data = "examples/training_data.txt"  out = "data/res_builtins_t.weights"  epochs = 2 }
+check("transformer params", last_params() == 42624)
+check("transformer seconds", last_seconds() > 0 and last_seconds() < 60)
+
+if fails == 0 { print("RES OK") } else { print("RES FEHLER:", fails) }

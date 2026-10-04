@@ -63,7 +63,7 @@ If you have an idea for a faster or better training algorithm:
 
 1. Open an issue describing the idea
 2. We discuss whether it's worth trying
-3. You or we implement it in `experiments/`
+3. You or we implement it in [`experiments/`](experiments/README.md) (measurement scripts and first results live there)
 4. We measure whether it actually helps
 
 No PhD required. Good ideas come from everywhere.

@@ -37,6 +37,7 @@ class MockModel : public TrainableModel {
 public:
     explicit MockModel(std::vector<double> val_seq) : val_(std::move(val_seq)) {}
     void print_info(size_t) const override {}
+    size_t param_count() const override { return 1234; }
     double train_epoch() override { ++epoch_; return 1.0 / (double)epoch_; }
     double evaluate(const std::vector<int>&) override { return val_.at(epoch_ - 1); }
     SkullWeights export_weights() const override {
@@ -348,6 +349,8 @@ int main() {
         expect(r.epochs_run == 8 && !r.stopped_early, "alle 8 Epochen gelaufen");
         expect(saved == 3, "gespeichert wurde das Modell aus Epoche 3, nicht das letzte");
         expect(std::fabs(r.train_loss - 1.0 / 8.0) < 1e-15, "train_loss = Trainings-Loss der LETZTEN Epoche");
+        expect(r.params == 1234, "params = param_count() des Modells");
+        expect(r.seconds >= 0.0 && r.seconds < 60.0, "seconds ist die Rechenzeit (hier winzig, nie negativ)");
     }
 
     std::printf("Early Stopping (patience)\n");

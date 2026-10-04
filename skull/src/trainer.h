@@ -138,6 +138,8 @@ struct TrainResult {
     int    epochs_run  = 0;
     bool   stopped_early = false;
     bool   paused        = false;     // durch stop_after angehalten (Checkpoint geschrieben)
+    double seconds       = 0.0;       // Rechenzeit der Epochen in diesem train-Aufruf (ohne Daten laden)
+    size_t params        = 0;         // Anzahl trainierbarer Parameter des Modells
 };
 
 inline std::string weights_path_for(const TrainConfig& cfg) {
@@ -149,6 +151,8 @@ class TrainableModel {
 public:
     virtual ~TrainableModel() = default;
     virtual void print_info(size_t total_tokens) const = 0;
+    // Anzahl trainierbarer Parameter
+    virtual size_t param_count() const = 0;
     // Eine Epoche trainieren; liefert den mittleren Trainings-Loss (je Token).
     virtual double train_epoch() = 0;
     // Mittlerer Loss je Token auf ids (nur Vorwaertsrechnung).
@@ -224,7 +228,7 @@ public:
         if (use_batch_) { gW_out_.assign(dim_ * vocab_, 0.0); gW_hidden_.assign(dim_ * dim_, 0.0); }
     }
 
-    size_t param_count() const { return vocab_ * dim_ + dim_ * dim_ + dim_ * vocab_; }
+    size_t param_count() const override { return vocab_ * dim_ + dim_ * dim_ + dim_ * vocab_; }
 
     void print_info(size_t total_tokens) const override {
         std::cout << "[Skull] Modell:     Bigram (1 Token Kontext)\n";
@@ -437,6 +441,8 @@ public:
 
     size_t threads() const { return threads_; }
 
+    size_t param_count() const override { return tc_.param_count(); }
+
     void print_info(size_t total_tokens) const override {
         std::cout << "[Skull] Modell:     Transformer (" << tc_.layers << " Schicht(en), " << tc_.heads
                   << " Kopf/Koepfe, Kontext " << T_ << ")\n";
@@ -590,6 +596,7 @@ inline TrainResult run_training(const TrainConfig& cfg, TrainableModel& model,
     const bool has_val = val_ids.size() >= 2;
     TrainResult res;
     res.has_val = has_val;
+    res.params  = model.param_count();
 
     double best_val = std::numeric_limits<double>::infinity();
     int    best_epoch = 0, bad_epochs = 0;
@@ -692,7 +699,8 @@ inline TrainResult run_training(const TrainConfig& cfg, TrainableModel& model,
     if ((cfg.checkpoint > 0 || cfg.stop_after > 0) && !ckpt_written_this_epoch && res.epochs_run >= start_epoch)
         save_ckpt(res.epochs_run);
 
-    std::cout << "\n[Skull] Training abgeschlossen! " << seconds() << "s\n";
+    res.seconds = seconds();
+    std::cout << "\n[Skull] Training abgeschlossen! " << res.seconds << "s\n";
 
     SkullWeights final_w;
     if (has_val && best_epoch > 0) {

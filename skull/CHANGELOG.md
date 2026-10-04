@@ -89,6 +89,14 @@ Measured on Tiny Shakespeare (1.1 MB), dim 64, 2 layers, 4 heads, context 64, ba
 - `docs/TUTORIAL.md` (German): download, language basics, first model, reading loss/perplexity, better
   training, pause/resume, sampling, troubleshooting. Every command and every quoted number was run.
 
+### 🔬 Added (experiments)
+
+- Builtins `last_seconds()` (computation time of the epochs in the last `train`) and `last_params()` (number of
+  trainable parameters), next to `last_loss()`, `last_val_loss()`, `last_best_epoch()`: enough to write
+  measurement series in Skull itself. `skull-research/experiments/` holds the first two (learning-rate sweep and
+  seed noise: std 0.027 in val loss at 10 short epochs, so differences below ~0.05 are noise), the rules for
+  comparable measurements and the reference numbers (val loss 2.1936 short / 1.7798 long budget).
+
 ### ➕ Added (language)
 
 - **Lists and text indexing**: list literals `[1, "a", [2]]`, `liste[i]` (negative from the end),

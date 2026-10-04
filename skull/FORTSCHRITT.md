@@ -55,7 +55,7 @@ generate MeinLLM {
 ```
 
 ## Tests
-`./build.sh --test` (oder `ctest` im Build-Verzeichnis): 96 Tests, darunter Regressionstests für
+`./build.sh --test` (oder `ctest` im Build-Verzeichnis): 99 Tests, darunter Regressionstests für
 Speicherleck, Autograd, Trainingsdaten-Limit, Generator-Randfälle, der Gradiententest des
 Transformers, Checkpoint-Wiederaufnahme, Listen/Text und ein Fuzz-/Modelltest für die Sprache. CI läuft auf Linux (gcc, clang,
 Sanitizer), macOS und Windows.

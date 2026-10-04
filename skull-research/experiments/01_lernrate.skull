@@ -1,0 +1,62 @@
+// ============================================================
+//  Experiment 01: Welche Lernrate ist die beste?
+//
+//  Frage:    Wie stark haengt das Ergebnis von `rate` ab?
+//  Aufbau:   Immer dasselbe Modell, dieselben Daten, derselbe Seed.
+//            Nur die Lernrate wird veraendert (Spitzenwert von Adam).
+//  Ergebnis: Tabelle am Ende. Je kleiner der Val-Loss, desto besser.
+//
+//  Starten (im Ordner skull/, dort liegt auch shakespeare.txt):
+//      ./build/skull ../skull-research/experiments/01_lernrate.skull
+// ============================================================
+
+// ---- Einstellungen: hier aendern ----
+define daten  = "shakespeare.txt"
+define raten  = [0.0003, 0.001, 0.003, 0.01, 0.03]
+define epochs = 10          // kurze Messung; die lange Messlatte hat 40 Epochen
+define fenster = 50000      // so viele Token pro Epoche (zufaellige Fenster)
+define seed   = 1
+
+// ---- Hilfsfunktionen fuer die Tabelle ----
+define func pad(text, breite) {
+    zeile = str(text)
+    while len(zeile) < breite { zeile = zeile + " " }
+    return zeile
+}
+define func runde(x, stellen) {
+    faktor = pow(10, stellen)
+    return round(x * faktor) / faktor
+}
+
+// ---- Messreihe ----
+define model Mini { dim = 64  context = 64  heads = 4  layers = 2 }
+define ergebnisse = []
+
+for r in raten {
+    train Mini {
+        data   = daten
+        out    = "experiment.weights"
+        epochs = epochs
+        steps  = fenster
+        rate   = r
+        batch  = 8
+        seed   = seed
+    }
+    push(ergebnisse, [r, last_val_loss(), last_loss(), last_best_epoch(), last_seconds(), last_params()])
+    print("-> rate", r, ": Val-Loss", runde(last_val_loss(), 4))
+}
+
+// ---- Tabelle ----
+print("")
+print("==================== ERGEBNIS: Lernrate ====================")
+print(pad("rate", 9) + pad("Val-Loss", 10) + pad("Train-Loss", 12) + pad("beste Epoche", 14) + pad("Sekunden", 10) + "Parameter")
+beste = ergebnisse[0]
+for z in ergebnisse {
+    if z[1] < beste[1] { beste = z }
+    print(pad(z[0], 9) + pad(runde(z[1], 4), 10) + pad(runde(z[2], 4), 12) + pad(z[3], 14) + pad(runde(z[4], 1), 10) + str(z[5]))
+}
+print("")
+print("Beste Lernrate:", beste[0], "mit Val-Loss", runde(beste[1], 4))
+if beste[0] == raten[0] or beste[0] == raten[len(raten) - 1] {
+    print("Achtung: das Beste liegt am Rand der Liste. Probiere kleinere bzw. groessere Werte dazu.")
+}
