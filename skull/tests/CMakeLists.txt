@@ -56,6 +56,10 @@ file(COPY "${CMAKE_SOURCE_DIR}/examples" DESTINATION "${SKULL_TESTENV}")
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/cases" DESTINATION "${SKULL_TESTENV}")
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/data"  DESTINATION "${SKULL_TESTENV}")
 
+# Fuzzing (Parser), generierte Programme, Modelltest fuer Listen/Text, Grenzen.
+# Laeuft in build/testenv, dort liegen examples/ und cases/ als Ausgangsmaterial.
+skull_cpp_test(language_fuzz_and_model fuzz.cpp WORKING_DIRECTORY "${SKULL_TESTENV}")
+
 # skull_case(<name> <skript> [EXIT <code>] [MATCH <regex>] [NO_MATCH <regex>])
 #   Regexe duerfen kein ';' enthalten (CMake-Listentrenner).
 function(skull_case name script)
@@ -103,6 +107,35 @@ skull_case(lang_else_if             cases/lang_else_if.skull             MATCH "
 skull_case(lang_logic               cases/lang_logic.skull               MATCH "LOGIK: false true false true true true.*KURZ1 ok.*KURZ2 ok.*RANG: true false.*NE: true false")
 skull_case(lang_modulo              cases/lang_modulo.skull              MATCH "MOD: 1 2 -2 0 1.5.*DREI: 5")
 skull_case(lang_modulo_zero         cases/lang_modulo_zero.skull         EXIT 1 MATCH "Zeile 1: Modulo durch 0")
+
+# Listen und Text
+skull_case(lang_lists               cases/lang_lists.skull               MATCH "LISTEN OK" NO_MATCH "FALSCH")
+skull_case(lang_text                cases/lang_text.skull                MATCH "TEXT OK" NO_MATCH "FALSCH")
+skull_case(lang_list_index_range    cases/lang_list_index_range.skull    EXIT 1 MATCH "Zeile 2: Index 2 ausserhalb der Liste .Laenge 2, erlaubt 0..1 oder -1..-2.")
+skull_case(lang_list_index_negative cases/lang_list_index_negative.skull EXIT 1 MATCH "Zeile 2: Index -3 ausserhalb der Liste")
+skull_case(lang_list_index_empty    cases/lang_list_index_empty.skull    EXIT 1 MATCH "ausserhalb der Liste .leer.")
+skull_case(lang_list_index_frac     cases/lang_list_index_frac.skull     EXIT 1 MATCH "Index muss eine ganze Zahl sein .bekommen: 0.5.")
+skull_case(lang_list_pop_empty      cases/lang_list_pop_empty.skull      EXIT 1 MATCH "pop..: die Liste ist leer")
+skull_case(lang_list_cycle          cases/lang_list_cycle.skull          EXIT 1 MATCH "Zeile 2: Eine Liste kann sich nicht selbst enthalten")
+skull_case(lang_list_cycle_indirect cases/lang_list_cycle_indirect.skull EXIT 1 MATCH "Zeile 3: Eine Liste kann sich nicht selbst enthalten")
+skull_case(lang_list_plus_number    cases/lang_list_plus_number.skull    EXIT 1 MATCH "Eine Liste laesst sich nur mit einer Liste oder einem Text addieren")
+skull_case(lang_text_immutable      cases/lang_text_immutable.skull      EXIT 1 MATCH "Text laesst sich nicht aendern")
+skull_case(lang_text_index_range    cases/lang_text_index_range.skull    EXIT 1 MATCH "Index 3 ausserhalb des Textes")
+skull_case(lang_num_bad             cases/lang_num_bad.skull             EXIT 1 MATCH "num..: '12abc' ist keine Zahl")
+skull_case(lang_num_nan             cases/lang_num_nan.skull             EXIT 1 MATCH "num..: 'nan' ist keine Zahl")
+skull_case(lang_num_empty           cases/lang_num_empty.skull           EXIT 1 MATCH "num..: '' ist keine Zahl")
+skull_case(lang_substr_range        cases/lang_substr_range.skull        EXIT 1 MATCH "substr..: start 4 ausserhalb des Textes .Laenge 3.")
+skull_case(lang_len_number          cases/lang_len_number.skull          EXIT 1 MATCH "len.. braucht eine Liste oder einen Text")
+skull_case(lang_index_number        cases/lang_index_number.skull        EXIT 1 MATCH "Zeile 2: . . geht nur bei Listen und Text")
+skull_case(lang_foreach_number      cases/lang_foreach_number.skull      EXIT 1 MATCH "for ... in braucht eine Liste oder einen Text")
+skull_case(lang_for_huge            cases/lang_for_huge.skull            EXIT 1 MATCH "for: Anfang und Ende muessen endliche Zahlen")
+
+# Parser: Fehlermeldungen statt Absturz
+skull_case(lang_assign_target       cases/lang_assign_target.skull       EXIT 1 MATCH "Zeile 2, Spalte 3: Links von '=' muss ein Name oder ein Index")
+skull_case(lang_number_huge         cases/lang_number_huge.skull         EXIT 1 MATCH "Zeile 1, Spalte 5: Zahl zu gross")
+skull_case(lang_nesting_limit       cases/lang_nesting_limit.skull       EXIT 1 MATCH "zu tief verschachtelt .hoechstens 200 Ebenen.")
+skull_case(lang_nesting_parens      cases/lang_nesting_parens.skull      EXIT 1 MATCH "zu tief verschachtelt .hoechstens 200 Ebenen.")
+skull_case(lang_chain_limit         cases/lang_chain_limit.skull         EXIT 1 MATCH "Ausdruck zu lang .hoechstens 20000 Glieder")
 
 # ---- Autograd / Speicher ----
 skull_case(autograd_diamond         cases/autograd_diamond.skull         MATCH "GRAD OK" NO_MATCH "GRAD FALSCH")

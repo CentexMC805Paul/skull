@@ -1,0 +1,25 @@
+// Text: len, Index, substr, num, for-each (UTF-8: ein Umlaut ist ein Zeichen)
+fails = 0
+define func check(name, cond) {
+    if not cond {
+        print("FALSCH:", name)
+        fails = fails + 1
+    }
+}
+
+t = "hällo"
+check("len", len(t) == 5 and len("") == 0 and len("abc") == 3)
+check("index", t[0] == "h" and t[1] == "ä" and t[4] == "o" and t[-1] == "o" and t[-5] == "h")
+check("substr", substr(t, 1, 3) == "äll" and substr(t, 0, 0) == "" and substr(t, 5, 3) == "")
+check("substr gekuerzt", substr(t, 3, 100) == "lo" and substr(t, 0, 100) == t)
+euro = "a€b😀c"
+check("3 und 4 Byte", len(euro) == 5 and euro[1] == "€" and euro[3] == "😀" and substr(euro, 1, 3) == "€b😀")
+n = 0
+for c in euro { n = n + 1 }
+check("for-each text", n == 5)
+check("num", num("12") == 12 and num("-3.5") == -3.5 and num(" 7 ") == 7 and num("0.25") == 0.25 and num(4) == 4)
+check("num summe", num("1") + num("2") == 3)
+check("text + text", "a" + "b" == "ab" and "x" + 1 == "x1")
+check("vergleich", "abc" == "abc" and "abc" != "abd")
+
+if fails == 0 { print("TEXT OK") } else { print("TEXT FEHLER:", fails) }

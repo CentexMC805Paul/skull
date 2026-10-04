@@ -74,6 +74,26 @@ Measured on Tiny Shakespeare (1.1 MB), dim 64, 2 layers, 4 heads, context 64, ba
 - The transformer now separates read-only parameters from a per-call `Workspace`, which is what makes
   the above thread-safe.
 
+### ➕ Added (language)
+
+- **Lists and text indexing**: list literals `[1, "a", [2]]`, `liste[i]` (negative from the end),
+  `liste[i] = wert`, `for x in liste`, `for c in text`, `liste + liste`, deep `==`; builtins `len`, `push`,
+  `pop`, `substr`, `num`. Lists have reference semantics (as in Python), cannot contain themselves
+  (`push(a, a)` is an error), and are limited (10 M elements, 256 MB per text, `print` abbreviates very
+  long lists). Text is indexed by UTF-8 character, not by byte.
+- **Parser robustness**: nesting depth (200) and chain length (20 000 terms) are limited, so a hostile or
+  broken file gives an error message instead of a stack overflow; huge number literals (`1` followed by
+  400 zeros) gave the message `stod` and now say what is wrong; "Ausdruck erwartet" now names line and
+  column. `for i in a..b` rejects non-finite or huge bounds (casting them to `long long` was undefined).
+- **Tests for the language** (`tests/fuzz.cpp`, run under all sanitizers in CI): mutation fuzzing of
+  `Lexer`/`Parser` with ~11 000 mutated example scripts and 3 000 random byte strings (only clean
+  `runtime_error`s allowed), 600 randomly generated programs (run twice, results must be identical),
+  a model test that runs 300 list programs and 400 text programs in Skull and in a C++ model and compares
+  output and error messages with line numbers, and limit tests (a 300 000-level-deep list is freed without
+  recursion on a 1 MB stack; cycles, exponential comparisons and huge lists are stopped). The tests were
+  mutation-checked: five deliberately injected bugs (index, destructor, cycle check, UTF-8, equality
+  shortcut) were each caught.
+
 ### ➕ Added
 
 - **Checkpoints / resume** (`checkpoint`, `stop_after`, `resume`): the complete training state
@@ -111,7 +131,7 @@ Measured on Tiny Shakespeare (1.1 MB), dim 64, 2 layers, 4 heads, context 64, ba
 - `train { out = "..." }` sets the weights path; `examples/transformer.skull`.
 - Language: `else if`, `and` / `or` / `not` (also `!`) with short-circuit evaluation, and `%`
   (Python semantics: the result takes the sign of the divisor).
-- Regression tests (`ctest`, 46 cases) for all of the above, run by GitHub Actions on Linux
+- Regression tests (`ctest`, ~100 cases) for all of the above, run by GitHub Actions on Linux
   (gcc, clang, AddressSanitizer/UBSan), macOS and Windows. Run locally with `./build.sh --test`.
 - Builtin `live_tensors()` (number of live tensors; used by the leak test).
 - `-DSKULL_SANITIZE=ON` build option.

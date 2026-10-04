@@ -1,4 +1,6 @@
 #pragma once
+#include <cmath>
+#include <cstdlib>
 #include <vector>
 #include <memory>
 #include <stdexcept>
@@ -17,6 +19,36 @@ class Parser {
 private:
     std::vector<Token> tokens;
     size_t             pos;
+
+    // Verschachtelungstiefe von Ausdruecken, Bloecken und Listen. Ohne Grenze koennte ein
+    // Programm aus zehntausenden "(" den Stack des Parsers sprengen (Absturz statt Fehlermeldung).
+    static constexpr int MAX_NESTING = 200;
+    // Laenge einer Kette gleichrangiger Operatoren (a + b + c ...) oder Index-Zugriffe (a[0][0]...).
+    // Jedes Glied macht den Syntaxbaum eine Ebene tiefer, und der Interpreter durchlaeuft ihn rekursiv.
+    static constexpr int MAX_CHAIN = 20000;
+    int depth_ = 0;
+
+    struct Nest {
+        Parser& p;
+        explicit Nest(Parser& parser) : p(parser) {
+            if (++p.depth_ > MAX_NESTING) {
+                const Token& t = p.peek();
+                p.depth_ = 0;   // Zaehler fuer weitere (hier nicht mehr erreichte) Aufrufe zuruecksetzen
+                throw std::runtime_error(
+                    "Zeile " + std::to_string(t.line) + ", Spalte " + std::to_string(t.col) +
+                    ": zu tief verschachtelt (hoechstens " + std::to_string(MAX_NESTING) + " Ebenen)");
+            }
+        }
+        ~Nest() { if (p.depth_ > 0) --p.depth_; }
+    };
+    void check_chain(int n) {
+        if (n > MAX_CHAIN) {
+            const Token& t = peek();
+            throw std::runtime_error(
+                "Zeile " + std::to_string(t.line) + ", Spalte " + std::to_string(t.col) +
+                ": Ausdruck zu lang (hoechstens " + std::to_string(MAX_CHAIN) + " Glieder in einer Kette)");
+        }
+    }
 
     Token& peek(int offset = 0) {
         size_t p = pos + offset;
@@ -42,12 +74,58 @@ private:
     bool check(TokenKind kind) { return peek().kind == kind; }
     bool match(TokenKind kind) { if (check(kind)) { advance(); return true; } return false; }
 
+    std::runtime_error expr_missing() {
+        const Token& t = peek();
+        return std::runtime_error("Zeile " + std::to_string(t.line) + ", Spalte " + std::to_string(t.col) +
+                                  ": Ausdruck erwartet, gefunden: " + token_kind_name(t.kind));
+    }
+
+    // Zahl-Literal in double umwandeln. std::stod wirft bei zu grossen Zahlen (400 Ziffern) und
+    // auch bei extrem kleinen eine Ausnahme ohne brauchbare Meldung ("stod").
+    static double number_value(const Token& t) {
+        const double v = std::strtod(t.value.c_str(), nullptr);
+        if (!std::isfinite(v))
+            throw std::runtime_error("Zeile " + std::to_string(t.line) + ", Spalte " + std::to_string(t.col) +
+                                     ": Zahl zu gross: " + t.value.substr(0, 30) + (t.value.size() > 30 ? "..." : ""));
+        return v;
+    }
+
     // ---- Ausdruecke ----
+    // Zugriff ueber Index: a[i], text[i], f(x)[0], a[i][j]
     std::unique_ptr<ExprNode> parse_factor() {
+        Nest nest(*this);
+        auto node = parse_primary();
+        int chain = 0;
+        // '[' zaehlt nur dann als Index, wenn es in derselben Zeile wie das Davor steht. Sonst wuerde
+        // "f(x)" gefolgt von einer Zeile "[1, 2]" als f(x)[1, 2] gelesen.
+        while (check(TokenKind::L_BRACKET) && pos > 0 && peek().line == tokens[pos - 1].line) {
+            Token br = advance();
+            auto idx = parse_expr();
+            expect(TokenKind::R_BRACKET);
+            node = std::make_unique<IndexExpr>(std::move(node), std::move(idx), br.line, br.col);
+            check_chain(++chain);
+        }
+        return node;
+    }
+
+    std::unique_ptr<ExprNode> parse_primary() {
         Token t = peek();
+        if (t.kind == TokenKind::L_BRACKET) {            // Listen-Literal [a, b, c]
+            advance();
+            std::vector<std::unique_ptr<ExprNode>> items;
+            if (!check(TokenKind::R_BRACKET)) {
+                items.push_back(parse_expr());
+                while (match(TokenKind::COMMA)) {
+                    if (check(TokenKind::R_BRACKET)) break;   // abschliessendes Komma erlaubt
+                    items.push_back(parse_expr());
+                }
+            }
+            expect(TokenKind::R_BRACKET);
+            return std::make_unique<ListExpr>(std::move(items), t.line, t.col);
+        }
         if (t.kind == TokenKind::NUMBER) {
             advance();
-            return std::make_unique<NumberExpr>(std::stod(t.value), t.line, t.col);
+            return std::make_unique<NumberExpr>(number_value(t), t.line, t.col);
         }
         if (t.kind == TokenKind::STRING) {
             advance();
@@ -63,7 +141,7 @@ private:
         if (t.kind == TokenKind::MINUS) {
             advance();
             if (check(TokenKind::NUMBER)) {
-                double v = -std::stod(peek().value); advance();
+                double v = -number_value(peek()); advance();
                 return std::make_unique<NumberExpr>(v, t.line, t.col);
             }
             auto zero  = std::make_unique<NumberExpr>(0.0, t.line, t.col);
@@ -94,9 +172,11 @@ private:
 
     std::unique_ptr<ExprNode> parse_term() {
         auto node = parse_factor(); if (!node) return nullptr;
+        int chain = 0;
         while (check(TokenKind::STAR) || check(TokenKind::SLASH) || check(TokenKind::PERCENT)) {
+            check_chain(++chain);
             Token op = advance(); auto right = parse_factor();
-            if (!right) throw std::runtime_error("Ausdruck erwartet!");
+            if (!right) throw expr_missing();
             node = std::make_unique<BinaryExpr>(op.value, std::move(node),
                                                 std::move(right), op.line, op.col);
         }
@@ -105,9 +185,11 @@ private:
 
     std::unique_ptr<ExprNode> parse_addition() {
         auto node = parse_term(); if (!node) return nullptr;
+        int chain = 0;
         while (check(TokenKind::PLUS) || check(TokenKind::MINUS)) {
+            check_chain(++chain);
             Token op = advance(); auto right = parse_term();
-            if (!right) throw std::runtime_error("Ausdruck erwartet!");
+            if (!right) throw expr_missing();
             node = std::make_unique<BinaryExpr>(op.value, std::move(node),
                                                 std::move(right), op.line, op.col);
         }
@@ -116,11 +198,13 @@ private:
 
     std::unique_ptr<ExprNode> parse_comparison() {
         auto node = parse_addition(); if (!node) return nullptr;
+        int chain = 0;
         while (check(TokenKind::LESS)    || check(TokenKind::GREATER) ||
                check(TokenKind::LESS_EQ) || check(TokenKind::GREATER_EQ) ||
                check(TokenKind::EQ_EQ)   || check(TokenKind::NOT_EQ)) {
+            check_chain(++chain);
             Token op = advance(); auto right = parse_addition();
-            if (!right) throw std::runtime_error("Ausdruck erwartet!");
+            if (!right) throw expr_missing();
             node = std::make_unique<BinaryExpr>(op.value, std::move(node),
                                                 std::move(right), op.line, op.col);
         }
@@ -130,6 +214,7 @@ private:
     // not hat niedrigere Prioritaet als Vergleiche: "not x > 3" ist "not (x > 3)"
     std::unique_ptr<ExprNode> parse_not() {
         if (check(TokenKind::KW_NOT)) {
+            Nest nest(*this);
             Token op = advance();
             auto operand = parse_not();
             return std::make_unique<UnaryExpr>("not", std::move(operand), op.line, op.col);
@@ -139,7 +224,9 @@ private:
 
     std::unique_ptr<ExprNode> parse_and() {
         auto node = parse_not();
+        int chain = 0;
         while (check(TokenKind::KW_AND)) {
+            check_chain(++chain);
             Token op = advance();
             auto right = parse_not();
             node = std::make_unique<BinaryExpr>("and", std::move(node), std::move(right), op.line, op.col);
@@ -149,7 +236,9 @@ private:
 
     std::unique_ptr<ExprNode> parse_or() {
         auto node = parse_and();
+        int chain = 0;
         while (check(TokenKind::KW_OR)) {
+            check_chain(++chain);
             Token op = advance();
             auto right = parse_and();
             node = std::make_unique<BinaryExpr>("or", std::move(node), std::move(right), op.line, op.col);
@@ -161,6 +250,7 @@ private:
 
     // ---- Bloecke ----
     std::vector<std::unique_ptr<StmtNode>> parse_block() {
+        Nest nest(*this);
         expect(TokenKind::L_BRACE);
         std::vector<std::unique_ptr<StmtNode>> stmts;
         while (!check(TokenKind::R_BRACE) && !check(TokenKind::END_OF_FILE))
@@ -262,11 +352,14 @@ private:
         Token var = expect(TokenKind::IDENTIFIER);
         expect(TokenKind::KW_IN);
         auto start = parse_expr();
-        expect(TokenKind::DOTDOT);
-        auto end = parse_expr();
-        auto body = parse_block();
-        return std::make_unique<ForStmt>(var.value, std::move(start), std::move(end),
-                                         std::move(body), tok.line, tok.col);
+        if (match(TokenKind::DOTDOT)) {                    // for i in 1..5 { ... }
+            auto end = parse_expr();
+            auto body = parse_block();
+            return std::make_unique<ForStmt>(var.value, std::move(start), std::move(end),
+                                             std::move(body), tok.line, tok.col);
+        }
+        auto body = parse_block();                          // for x in liste { ... }
+        return std::make_unique<ForEachStmt>(var.value, std::move(start), std::move(body), tok.line, tok.col);
     }
 
     std::unique_ptr<StmtNode> parse_while() {
@@ -305,6 +398,17 @@ private:
         }
 
         auto expr = parse_expr();
+        if (check(TokenKind::EQUALS)) {                    // liste[i] = wert
+            if (!dynamic_cast<IndexExpr*>(expr.get())) {
+                const Token& eq = peek();
+                throw std::runtime_error(
+                    "Zeile " + std::to_string(eq.line) + ", Spalte " + std::to_string(eq.col) +
+                    ": Links von '=' muss ein Name oder ein Index (liste[i]) stehen");
+            }
+            advance();
+            auto val = parse_expr();
+            return std::make_unique<IndexAssignStmt>(std::move(expr), std::move(val), t.line, t.col);
+        }
         return std::make_unique<ExprStmt>(std::move(expr), t.line, t.col);
     }
 

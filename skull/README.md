@@ -146,7 +146,44 @@ if x % 2 == 0 and not (x > 100) {
 - Logik: `and`, `or`, `not` (auch `!`). Rangfolge: `or` < `and` < `not` < Vergleiche. `and`/`or`
   werten die rechte Seite nur aus, wenn nötig, und liefern `true`/`false`.
 - Rechnen: `+  -  *  /  %`. `%` wie in Python (`-7 % 3` ist `2`).
-- Es gibt (noch) keine Listen.
+
+### 3a. Listen und Text
+```skull
+define xs = [10, 20, 30]
+push(xs, 40)                  // anhängen
+xs[1] = 99                    // Element ändern
+print(xs, len(xs), xs[0], xs[-1])   // [10, 99, 30, 40] 4 10 40   (-1 = letztes Element)
+define last = pop(xs)         // letztes Element entfernen und zurückgeben
+
+for x in xs { print(x) }      // über eine Liste laufen (oder über die Zeichen eines Texts)
+
+define m = [[1, 2], [3, 4]]   // verschachtelt
+m[1][0] = 7
+
+define t = "häll€"
+print(len(t), t[1], substr(t, 1, 3))   // 5 ä äll   -> ein Zeichen ist ein UTF-8-Zeichen, nicht ein Byte
+define n = num("12.5") + 1            // Text -> Zahl (Fehler, wenn es keine Zahl ist)
+```
+- **Listen sind Verweise:** `b = a` zeigt auf *dieselbe* Liste (wie in Python); Funktionen, die eine Liste
+  bekommen, können sie ändern. Eine Kopie bekommst du mit `b = a + []`.
+- `liste + liste` hängt zusammen und legt eine neue Liste an; `"Text" + liste` schreibt die Liste als Text.
+- `==` vergleicht Listen Element für Element. Eine leere Liste ist `false`, sonst `true`.
+- Indizes sind ganze Zahlen ab 0; negative zählen vom Ende. Außerhalb gibt es einen Fehler mit Zeilennummer.
+- Text lässt sich nicht ändern (`t[0] = "x"` ist ein Fehler); baue stattdessen einen neuen Text mit `substr` und `+`.
+  `text[i]` muss die Zeichen davor zählen — für lange Texte ist `for c in text { ... }` schneller als eine
+  Schleife mit Index.
+- `for x in liste` läuft so oft, wie die Liste beim Start lang war; `push` in der Schleife macht sie nicht endlos.
+- Eine Liste kann sich nicht selbst enthalten (`push(a, a)` ist ein Fehler).
+- Grenzen: höchstens 10 000 000 Elemente pro Liste, 256 MB pro Text; `print` kürzt sehr lange Listen mit `...`.
+
+| Funktion | Bedeutung |
+|---|---|
+| `len(x)` | Länge einer Liste oder eines Texts (in Zeichen) |
+| `push(liste, wert)` | hängt an |
+| `pop(liste)` | entfernt das letzte Element und gibt es zurück |
+| `substr(text, start, anzahl)` | Teiltext ab `start` (0-basiert); eine zu große `anzahl` wird gekürzt |
+| `num(text)` | Text → Zahl (`"12"`, `"-3.5"`; alles andere ist ein Fehler) |
+| `str(x)` | Wert als Text |
 
 ### 4. KI-Modell trainieren
 ```skull

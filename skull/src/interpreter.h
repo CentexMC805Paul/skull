@@ -8,6 +8,9 @@
 #include <iostream>
 #include <cmath>
 #include <climits>
+#include <sstream>
+#include <locale>
+#include <unordered_set>
 #include "ast.h"
 #include "tensor.h"
 #include "trainer.h"
@@ -19,26 +22,30 @@
 //  Fuehrt den AST direkt aus (Tree-Walking).
 // ============================================================
 
+struct SkullList;
+using ListPtr = std::shared_ptr<SkullList>;
+
+// Obergrenzen: ein fehlerhaftes Skript soll mit einer Fehlermeldung enden, nicht den Rechner
+// in den Speichermangel treiben.
+constexpr size_t SKULL_MAX_LIST   = 10000000;        // Elemente pro Liste
+constexpr size_t SKULL_MAX_STRING = 256u << 20;      // Bytes pro Text
+
 struct SkullValue {
-    enum class Kind { NUMBER, STRING, BOOL, TENSOR, NOTHING } kind;
+    enum class Kind { NUMBER, STRING, BOOL, TENSOR, LIST, NOTHING } kind;
     double number = 0.0;
     std::string text;
     bool flag = false;
     TensorPtr tensor;
+    ListPtr list;      // Listen haben Referenz-Semantik: b = a zeigt auf dieselbe Liste
 
     SkullValue() : kind(Kind::NOTHING) {}
     SkullValue(double v) : kind(Kind::NUMBER), number(v) {}
     SkullValue(const std::string& s) : kind(Kind::STRING), text(s) {}
     SkullValue(bool b) : kind(Kind::BOOL), flag(b) {}
     SkullValue(TensorPtr t) : kind(Kind::TENSOR), tensor(t) {}
+    SkullValue(ListPtr l) : kind(Kind::LIST), list(std::move(l)) {}
 
-    bool is_truthy() const {
-        if (kind == Kind::NUMBER) return number != 0.0;
-        if (kind == Kind::BOOL)   return flag;
-        if (kind == Kind::STRING) return !text.empty();
-        if (kind == Kind::TENSOR) return tensor != nullptr;
-        return false;
-    }
+    bool is_truthy() const;
     double as_number(int line = 0) const {
         if (kind == Kind::NUMBER) return number;
         if (kind == Kind::BOOL)   return flag ? 1.0 : 0.0;
@@ -59,28 +66,89 @@ struct SkullValue {
         }
         throw std::runtime_error("Zeile " + std::to_string(line) + ": Tensor erwartet");
     }
-    std::string to_string() const {
-        if (kind == Kind::NUMBER) {
-            if (number == std::floor(number) && std::abs(number) < 1e15)
-                return std::to_string((long long)number);
-            std::string s = std::to_string(number);
-            s.erase(s.find_last_not_of('0') + 1);
-            if (s.back() == '.') s += "0";
-            return s;
-        }
-        if (kind == Kind::STRING) return text;
-        if (kind == Kind::BOOL)   return flag ? "true" : "false";
-        if (kind == Kind::TENSOR && tensor) return tensor->to_string();
-        return "";
-    }
+    std::string to_string() const;
     void print() const {
         if (kind == Kind::TENSOR && tensor) tensor->print();
         else std::cout << to_string();
     }
+    // Fuer Listen: schreibt "[1, "a", [2]]" in out; budget begrenzt die Gesamtzahl ausgegebener Elemente
+    void format_list(std::string& out, int depth, size_t& budget) const;
 };
 
+struct SkullList {
+    std::vector<SkullValue> items;
+    ~SkullList();
+};
+
+// Teilbaeume nicht rekursiv freigeben: eine tief verschachtelte Liste (a = [a] in einer Schleife)
+// wuerde sonst beim Aufraeumen den Stack sprengen.
+inline SkullList::~SkullList() {
+    std::vector<ListPtr> pending;
+    auto take = [&pending](std::vector<SkullValue>& v) {
+        for (auto& x : v)
+            if (x.list && x.list.use_count() == 1) pending.push_back(std::move(x.list));
+    };
+    take(items);
+    while (!pending.empty()) {
+        ListPtr cur = std::move(pending.back());
+        pending.pop_back();
+        take(cur->items);
+    }
+}
+
+inline ListPtr make_list() { return std::make_shared<SkullList>(); }
+
+inline bool SkullValue::is_truthy() const {
+    if (kind == Kind::NUMBER) return number != 0.0;
+    if (kind == Kind::BOOL)   return flag;
+    if (kind == Kind::STRING) return !text.empty();
+    if (kind == Kind::TENSOR) return tensor != nullptr;
+    if (kind == Kind::LIST)   return list && !list->items.empty();
+    return false;
+}
+
+inline std::string SkullValue::to_string() const {
+    if (kind == Kind::NUMBER) {
+        if (number == std::floor(number) && std::abs(number) < 1e15)
+            return std::to_string((long long)number);
+        std::string s = std::to_string(number);
+        s.erase(s.find_last_not_of('0') + 1);
+        if (s.back() == '.') s += "0";
+        return s;
+    }
+    if (kind == Kind::STRING) return text;
+    if (kind == Kind::BOOL)   return flag ? "true" : "false";
+    if (kind == Kind::TENSOR && tensor) return tensor->to_string();
+    if (kind == Kind::LIST) {
+        std::string out;
+        size_t budget = 100000;   // sehr lange Listen werden mit "..." abgekuerzt
+        format_list(out, 0, budget);
+        return out;
+    }
+    return "";
+}
+
+inline void SkullValue::format_list(std::string& out, int depth, size_t& budget) const {
+    if (depth >= 8) { out += "[...]"; return; }
+    out += '[';
+    bool first = true;
+    for (const auto& x : list->items) {
+        if (budget == 0) { out += first ? "..." : ", ..."; break; }
+        --budget;
+        if (!first) out += ", ";
+        first = false;
+        if (x.kind == Kind::LIST)         x.format_list(out, depth + 1, budget);
+        else if (x.kind == Kind::STRING)  { out += '"'; out += x.text; out += '"'; }
+        else if (x.kind == Kind::NOTHING) out += "nothing";
+        else                              out += x.to_string();
+    }
+    out += ']';
+}
+
 // Gleichheit mit Typ: 1 == "1" ist false. Zahl und Bool vergleichen als Zahl.
-inline bool skull_values_equal(const SkullValue& a, const SkullValue& b) {
+// Listen vergleichen elementweise. Tiefe und Aufwand sind begrenzt (Listen koennen sich Teillisten teilen,
+// der naive Vergleich wuerde dann exponentiell lang dauern).
+inline bool skull_equal_impl(const SkullValue& a, const SkullValue& b, int depth, size_t& steps) {
     using K = SkullValue::Kind;
     auto numeric = [](const SkullValue& v) { return v.kind == K::NUMBER || v.kind == K::BOOL; };
     if (numeric(a) && numeric(b)) return a.as_number() == b.as_number();
@@ -89,8 +157,64 @@ inline bool skull_values_equal(const SkullValue& a, const SkullValue& b) {
         case K::STRING:  return a.text == b.text;
         case K::TENSOR:  return a.tensor == b.tensor;   // gleiche Tensor-Instanz
         case K::NOTHING: return true;
+        case K::LIST: {
+            if (a.list == b.list) return true;
+            if (a.list->items.size() != b.list->items.size()) return false;
+            if (depth >= 200)
+                throw std::runtime_error("Listen zu tief verschachtelt zum Vergleichen (max. 200 Ebenen)");
+            for (size_t i = 0; i < a.list->items.size(); ++i) {
+                if (steps == 0) throw std::runtime_error("Listen-Vergleich zu aufwaendig");
+                --steps;
+                if (!skull_equal_impl(a.list->items[i], b.list->items[i], depth + 1, steps)) return false;
+            }
+            return true;
+        }
         default:         return false;
     }
+}
+inline bool skull_values_equal(const SkullValue& a, const SkullValue& b) {
+    size_t steps = 10000000;
+    return skull_equal_impl(a, b, 0, steps);
+}
+
+// Enthaelt v (selbst oder in Teillisten) die Liste target? Verhindert Zyklen (a enthaelt a):
+// die wuerden Ausgabe und Vergleich endlos laufen lassen und sich nie freigeben lassen.
+inline bool list_contains(const SkullValue& v, const SkullList* target) {
+    if (v.kind != SkullValue::Kind::LIST) return false;
+    std::vector<const SkullList*> stack{v.list.get()};
+    std::unordered_set<const SkullList*> seen;
+    while (!stack.empty()) {
+        const SkullList* l = stack.back();
+        stack.pop_back();
+        if (l == target) return true;
+        if (!seen.insert(l).second) continue;
+        for (const auto& x : l->items)
+            if (x.kind == SkullValue::Kind::LIST) stack.push_back(x.list.get());
+    }
+    return false;
+}
+
+// ---- Text als Folge von Zeichen (UTF-8): ein Umlaut ist ein Zeichen, nicht zwei Bytes ----
+inline size_t utf8_char_len(const std::string& s, size_t i) {
+    const unsigned char c = (unsigned char)s[i];
+    size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 1;
+    if (n == 1 || i + n > s.size()) return 1;
+    for (size_t k = 1; k < n; ++k)
+        if (((unsigned char)s[i + k] & 0xC0) != 0x80) return 1;   // ungueltige Folge: ein Byte = ein Zeichen
+    return n;
+}
+// Byte-Positionen aller Zeichen, plus s.size() am Ende (also Anzahl Zeichen + 1 Eintraege)
+inline std::vector<size_t> utf8_offsets(const std::string& s) {
+    std::vector<size_t> off;
+    off.reserve(s.size() + 1);
+    for (size_t i = 0; i < s.size(); i += utf8_char_len(s, i)) off.push_back(i);
+    off.push_back(s.size());
+    return off;
+}
+inline size_t utf8_count(const std::string& s) {
+    size_t n = 0;
+    for (size_t i = 0; i < s.size(); i += utf8_char_len(s, i)) ++n;
+    return n;
 }
 
 struct ReturnSignal {
@@ -139,6 +263,8 @@ private:
     std::map<std::string, SkullFunction> functions;
     std::map<std::string, const ModelStmt*> models;
     int call_depth = 0;
+    size_t max_list_   = SKULL_MAX_LIST;
+    size_t max_string_ = SKULL_MAX_STRING;
     TrainResult last_train_;
     bool has_train_ = false;
 
@@ -196,6 +322,59 @@ private:
                                      std::to_string(count) + (count == 1 ? " Argument" : " Argumente"));
     }
 
+    static std::string err(int line, const std::string& msg) {
+        return "Zeile " + std::to_string(line) + ": " + msg;
+    }
+
+    // Index pruefen: ganze Zahl; negativ zaehlt vom Ende (-1 = letztes Element)
+    static size_t resolve_index(const SkullValue& iv, size_t len, int line, const char* what) {
+        if (iv.kind != SkullValue::Kind::NUMBER)
+            throw std::runtime_error(err(line, "Index muss eine Zahl sein"));
+        double d = iv.number;
+        if (!std::isfinite(d) || d != std::floor(d))
+            throw std::runtime_error(err(line, "Index muss eine ganze Zahl sein (bekommen: " + iv.to_string() + ")"));
+        if (d < 0.0) d += (double)len;
+        if (d < 0.0 || d >= (double)len) {
+            std::string msg = "Index " + iv.to_string() + " ausserhalb " + what;
+            if (len == 0) msg += " (leer)";
+            else msg += " (Laenge " + std::to_string(len) + ", erlaubt 0.." + std::to_string(len - 1) + " oder -1.." + std::to_string(-(long long)len) + ")";
+            throw std::runtime_error(err(line, msg));
+        }
+        return (size_t)d;
+    }
+
+    static double whole_number(const SkullValue& v, int line, const char* fn, const char* what) {
+        if (v.kind != SkullValue::Kind::NUMBER || !std::isfinite(v.number) || v.number != std::floor(v.number))
+            throw std::runtime_error(err(line, std::string(fn) + "(): " + what + " muss eine ganze Zahl sein"));
+        return v.number;
+    }
+
+    // Strikte Umwandlung Text -> Zahl (unabhaengig von der eingestellten Sprache, ohne "nan"/"inf"/Hex)
+    static bool parse_number(const std::string& text, double& out) {
+        size_t a = text.find_first_not_of(" \t\r\n");
+        if (a == std::string::npos) return false;
+        size_t b = text.find_last_not_of(" \t\r\n");
+        std::istringstream is(text.substr(a, b - a + 1));
+        is.imbue(std::locale::classic());
+        double d = 0.0;
+        is >> d;
+        if (is.fail() || !is.eof() || !std::isfinite(d)) return false;
+        const unsigned char first = (unsigned char)text[a];
+        if (!(std::isdigit(first) || first == '-' || first == '+' || first == '.')) return false;
+        out = d;
+        return true;
+    }
+
+    void too_big_list(int line) const {
+        throw std::runtime_error(err(line, "Liste zu gross (hoechstens " + std::to_string(max_list_) + " Elemente)"));
+    }
+    void list_add(SkullList& l, SkullValue v, int line) {
+        if (l.items.size() >= max_list_) too_big_list(line);
+        if (v.kind == SkullValue::Kind::LIST && list_contains(v, &l))
+            throw std::runtime_error(err(line, "Eine Liste kann sich nicht selbst enthalten"));
+        l.items.push_back(std::move(v));
+    }
+
     SkullValue eval_expr(const ExprNode* node, std::shared_ptr<Environment> env) {
         if (!node) throw std::runtime_error("Leerer Ausdruck");
         if (auto* n = dynamic_cast<const NumberExpr*>(node)) return SkullValue(n->value);
@@ -205,7 +384,28 @@ private:
         if (auto* n = dynamic_cast<const UnaryExpr*>(node))  return SkullValue(!eval_expr(n->operand.get(), env).is_truthy());
         if (auto* n = dynamic_cast<const BinaryExpr*>(node)) return eval_binary(n, env);
         if (auto* n = dynamic_cast<const CallExpr*>(node))   return eval_call(n, env);
+        if (auto* n = dynamic_cast<const ListExpr*>(node)) {
+            auto l = make_list();
+            if (n->items.size() > max_list_) too_big_list(n->line);
+            l->items.reserve(n->items.size());
+            for (const auto& it : n->items) l->items.push_back(eval_expr(it.get(), env));
+            return SkullValue(l);
+        }
+        if (auto* n = dynamic_cast<const IndexExpr*>(node)) return eval_index(n, env);
         throw std::runtime_error("Unbekannter Ausdruck");
+    }
+
+    SkullValue eval_index(const IndexExpr* n, std::shared_ptr<Environment> env) {
+        SkullValue obj = eval_expr(n->object.get(), env);
+        SkullValue idx = eval_expr(n->index.get(), env);
+        if (obj.kind == SkullValue::Kind::LIST)
+            return obj.list->items[resolve_index(idx, obj.list->items.size(), n->line, "der Liste")];
+        if (obj.kind == SkullValue::Kind::STRING) {
+            const auto off = utf8_offsets(obj.text);
+            const size_t i = resolve_index(idx, off.size() - 1, n->line, "des Textes");
+            return SkullValue(obj.text.substr(off[i], off[i + 1] - off[i]));
+        }
+        throw std::runtime_error(err(n->line, "[ ] geht nur bei Listen und Text"));
     }
 
     SkullValue eval_binary(const BinaryExpr* n, std::shared_ptr<Environment> env) {
@@ -229,10 +429,29 @@ private:
         }
         if (op == "+" && (lT || rT)) return SkullValue(tensor_add(lv.as_tensor(n->line), rv.as_tensor(n->line)));
         if (op == "-" && (lT || rT)) return SkullValue(tensor_sub(lv.as_tensor(n->line), rv.as_tensor(n->line)));
-        if (op == "+" && (lv.kind == SkullValue::Kind::STRING || rv.kind == SkullValue::Kind::STRING))
-            return SkullValue(lv.to_string() + rv.to_string());
-        if (op == "==") return SkullValue(skull_values_equal(lv, rv));
-        if (op == "!=") return SkullValue(!skull_values_equal(lv, rv));
+        if (op == "+" && (lv.kind == SkullValue::Kind::STRING || rv.kind == SkullValue::Kind::STRING)) {
+            std::string a = lv.to_string(), b = rv.to_string();
+            if (a.size() + b.size() > max_string_)
+                throw std::runtime_error(err(n->line, "Text zu lang (hoechstens " + std::to_string(max_string_) + " Bytes)"));
+            return SkullValue(a + b);
+        }
+        if (op == "+" && (lv.kind == SkullValue::Kind::LIST || rv.kind == SkullValue::Kind::LIST)) {
+            if (lv.kind != SkullValue::Kind::LIST || rv.kind != SkullValue::Kind::LIST)
+                throw std::runtime_error(err(n->line, "Eine Liste laesst sich nur mit einer Liste oder einem Text addieren "
+                                                      "(Element anhaengen: push(liste, wert) oder liste + [wert])"));
+            if (lv.list->items.size() + rv.list->items.size() > max_list_) too_big_list(n->line);
+            auto l = make_list();
+            l->items.reserve(lv.list->items.size() + rv.list->items.size());
+            l->items.insert(l->items.end(), lv.list->items.begin(), lv.list->items.end());
+            l->items.insert(l->items.end(), rv.list->items.begin(), rv.list->items.end());
+            return SkullValue(l);
+        }
+        if (op == "==" || op == "!=") {
+            bool eq;
+            try { eq = skull_values_equal(lv, rv); }
+            catch (const std::runtime_error& e) { throw std::runtime_error(err(n->line, e.what())); }
+            return SkullValue(op == "==" ? eq : !eq);
+        }
 
         double l = lv.as_number(n->line), r = rv.as_number(n->line);
         if (op == "+") return SkullValue(l + r);
@@ -341,6 +560,55 @@ private:
         if (name == "min")   { need_args(n, args, 2); return SkullValue(std::min(args[0].as_number(line), args[1].as_number(line))); }
         if (name == "max")   { need_args(n, args, 2); return SkullValue(std::max(args[0].as_number(line), args[1].as_number(line))); }
         if (name == "str")   { need_args(n, args, 1); return SkullValue(args[0].to_string()); }
+
+        // ---- Listen und Text ----
+        if (name == "len") {
+            need_args(n, args, 1);
+            if (args[0].kind == SkullValue::Kind::LIST)   return SkullValue((double)args[0].list->items.size());
+            if (args[0].kind == SkullValue::Kind::STRING) return SkullValue((double)utf8_count(args[0].text));
+            throw std::runtime_error(err(line, "len() braucht eine Liste oder einen Text"));
+        }
+        if (name == "push") {
+            need_args(n, args, 2);
+            if (args[0].kind != SkullValue::Kind::LIST)
+                throw std::runtime_error(err(line, "push(): das erste Argument muss eine Liste sein"));
+            list_add(*args[0].list, args[1], line);
+            return SkullValue();
+        }
+        if (name == "pop") {
+            need_args(n, args, 1);
+            if (args[0].kind != SkullValue::Kind::LIST)
+                throw std::runtime_error(err(line, "pop(): das Argument muss eine Liste sein"));
+            auto& items = args[0].list->items;
+            if (items.empty()) throw std::runtime_error(err(line, "pop(): die Liste ist leer"));
+            SkullValue last = std::move(items.back());
+            items.pop_back();
+            return last;
+        }
+        if (name == "substr") {   // substr(text, start, anzahl): Zeichen ab start (0-basiert); zu grosse Anzahl wird gekuerzt
+            need_args(n, args, 3);
+            const std::string& txt = args[0].as_string(line);
+            const auto off = utf8_offsets(txt);
+            const double len = (double)(off.size() - 1);
+            const double start = whole_number(args[1], line, "substr", "start");
+            const double cnt   = whole_number(args[2], line, "substr", "anzahl");
+            if (start < 0.0 || start > len)
+                throw std::runtime_error(err(line, "substr(): start " + args[1].to_string() + " ausserhalb des Textes (Laenge " +
+                                                   std::to_string(off.size() - 1) + ")"));
+            if (cnt < 0.0) throw std::runtime_error(err(line, "substr(): anzahl darf nicht negativ sein"));
+            const size_t a = (size_t)start;
+            const size_t b = (size_t)std::min(start + cnt, len);
+            return SkullValue(txt.substr(off[a], off[b] - off[a]));
+        }
+        if (name == "num") {      // Text -> Zahl (strikt: "12", "-3.5"; sonst Fehler)
+            need_args(n, args, 1);
+            if (args[0].kind == SkullValue::Kind::NUMBER) return args[0];
+            const std::string& txt = args[0].as_string(line);
+            double d;
+            if (!parse_number(txt, d))
+                throw std::runtime_error(err(line, "num(): '" + txt.substr(0, 40) + "' ist keine Zahl"));
+            return SkullValue(d);
+        }
 
         auto it = functions.find(name);
         if (it != functions.end()) {
@@ -491,9 +759,51 @@ private:
             else                  { for (const auto& s : n->else_body) exec_stmt(s.get(), be); }
             return;
         }
+        if (auto* n = dynamic_cast<const IndexAssignStmt*>(node)) {
+            auto* target = static_cast<const IndexExpr*>(n->target.get());
+            SkullValue val = eval_expr(n->value.get(), env);
+            SkullValue obj = eval_expr(target->object.get(), env);
+            SkullValue idx = eval_expr(target->index.get(), env);
+            if (obj.kind == SkullValue::Kind::STRING)
+                throw std::runtime_error(err(n->line, "Text laesst sich nicht aendern; baue einen neuen Text "
+                                                      "(z. B. substr(...) + \"x\" + substr(...))"));
+            if (obj.kind != SkullValue::Kind::LIST)
+                throw std::runtime_error(err(n->line, "[ ] = geht nur bei Listen"));
+            const size_t i = resolve_index(idx, obj.list->items.size(), n->line, "der Liste");
+            if (val.kind == SkullValue::Kind::LIST && list_contains(val, obj.list.get()))
+                throw std::runtime_error(err(n->line, "Eine Liste kann sich nicht selbst enthalten"));
+            obj.list->items[i] = std::move(val);
+            return;
+        }
+        if (auto* n = dynamic_cast<const ForEachStmt*>(node)) {
+            SkullValue it = eval_expr(n->iterable.get(), env);
+            if (it.kind == SkullValue::Kind::LIST) {
+                // Die Anzahl der Durchlaeufe steht beim Start fest; push/pop in der Schleife machen sie nicht endlos
+                const size_t count = it.list->items.size();
+                for (size_t i = 0; i < count && i < it.list->items.size(); ++i) {
+                    auto le = std::make_shared<Environment>(env);
+                    le->define(n->var_name, it.list->items[i]);
+                    for (const auto& s : n->body) exec_stmt(s.get(), le);
+                }
+            } else if (it.kind == SkullValue::Kind::STRING) {
+                const std::string txt = it.text;
+                for (size_t i = 0; i < txt.size(); ) {
+                    const size_t len = utf8_char_len(txt, i);
+                    auto le = std::make_shared<Environment>(env);
+                    le->define(n->var_name, SkullValue(txt.substr(i, len)));
+                    for (const auto& s : n->body) exec_stmt(s.get(), le);
+                    i += len;
+                }
+            } else {
+                throw std::runtime_error(err(n->line, "for ... in braucht eine Liste oder einen Text (Zahlenbereich: for i in 1..5)"));
+            }
+            return;
+        }
         if (auto* n = dynamic_cast<const ForStmt*>(node)) {
             double start = eval_expr(n->start.get(), env).as_number(n->line);
             double end   = eval_expr(n->end.get(), env).as_number(n->line);
+            if (!(std::fabs(start) <= 9e15) || !(std::fabs(end) <= 9e15))   // schliesst auch nan und inf aus
+                throw std::runtime_error(err(n->line, "for: Anfang und Ende muessen endliche Zahlen (hoechstens 9e15) sein"));
             for (long long i = (long long)start; i <= (long long)end; ++i) {
                 auto le = std::make_shared<Environment>(env);
                 le->define(n->var_name, SkullValue((double)i));
@@ -515,7 +825,11 @@ private:
     }
 
 public:
-    Interpreter() { global_env = std::make_shared<Environment>(); }
+    // Die Grenzen sind einstellbar, damit Tests (Fuzzer) mit kleinen Werten laufen koennen.
+    explicit Interpreter(size_t max_list = SKULL_MAX_LIST, size_t max_string = SKULL_MAX_STRING)
+        : max_list_(max_list), max_string_(max_string) {
+        global_env = std::make_shared<Environment>();
+    }
 
     void run(const ProgramNode* program) {
         try {

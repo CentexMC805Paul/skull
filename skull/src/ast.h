@@ -47,6 +47,17 @@ struct UnaryExpr : ExprNode {
     UnaryExpr(std::string o, std::unique_ptr<ExprNode> e, int l, int c)
         : op(std::move(o)), operand(std::move(e)) { line=l; col=c; }
 };
+// [a, b, c]
+struct ListExpr : ExprNode {
+    std::vector<std::unique_ptr<ExprNode>> items;
+    ListExpr(std::vector<std::unique_ptr<ExprNode>> it, int l, int c) : items(std::move(it)) { line=l; col=c; }
+};
+// liste[i], text[i]
+struct IndexExpr : ExprNode {
+    std::unique_ptr<ExprNode> object, index;
+    IndexExpr(std::unique_ptr<ExprNode> o, std::unique_ptr<ExprNode> i, int l, int c)
+        : object(std::move(o)), index(std::move(i)) { line=l; col=c; }
+};
 struct CallExpr : ExprNode {
     std::string name;
     std::vector<std::unique_ptr<ExprNode>> args;
@@ -139,6 +150,21 @@ struct WhileStmt : StmtNode {
     WhileStmt(std::unique_ptr<ExprNode> cond,
               std::vector<std::unique_ptr<StmtNode>> b, int l, int c)
         : condition(std::move(cond)), body(std::move(b)) { line=l; col=c; }
+};
+// liste[i] = wert
+struct IndexAssignStmt : StmtNode {
+    std::unique_ptr<ExprNode> target;   // immer ein IndexExpr
+    std::unique_ptr<ExprNode> value;
+    IndexAssignStmt(std::unique_ptr<ExprNode> t, std::unique_ptr<ExprNode> v, int l, int c)
+        : target(std::move(t)), value(std::move(v)) { line=l; col=c; }
+};
+// for x in liste { ... }
+struct ForEachStmt : StmtNode {
+    std::string var_name;
+    std::unique_ptr<ExprNode> iterable;
+    std::vector<std::unique_ptr<StmtNode>> body;
+    ForEachStmt(std::string v, std::unique_ptr<ExprNode> it, std::vector<std::unique_ptr<StmtNode>> b, int l, int c)
+        : var_name(std::move(v)), iterable(std::move(it)), body(std::move(b)) { line=l; col=c; }
 };
 struct ExprStmt : StmtNode {
     std::unique_ptr<ExprNode> expr;

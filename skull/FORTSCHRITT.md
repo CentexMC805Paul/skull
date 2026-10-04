@@ -10,7 +10,8 @@ for i in 1..100 { print(i) }
 while x > 0 { x = x - 1 }
 ```
 Rekursion bis 1000 Ebenen, typsichere Vergleiche, `and`/`or`/`not` mit Kurzschluss, `%`,
-Fehlermeldungen mit Zeilennummer. Fehlt: Listen.
+Fehlermeldungen mit Zeilennummer. Listen (`[1, 2]`, `xs[0]`, `push`, `pop`, `len`, `for x in xs`),
+Text-Zugriff (`t[0]`, `substr`, `num`; UTF-8-Zeichen), Parser mit Verschachtelungsgrenzen, Fuzz-Tests.
 
 ## Tensoren & KI-Mathematik (AVX2, Autograd)
 ```skull
@@ -54,9 +55,9 @@ generate MeinLLM {
 ```
 
 ## Tests
-`./build.sh --test` (oder `ctest` im Build-Verzeichnis): 46 Tests, darunter Regressionstests für
-Speicherleck, Autograd, Trainingsdaten-Limit, Generator-Randfälle und der Gradiententest des
-Transformers. CI läuft auf Linux (gcc, clang,
+`./build.sh --test` (oder `ctest` im Build-Verzeichnis): 97 Tests, darunter Regressionstests für
+Speicherleck, Autograd, Trainingsdaten-Limit, Generator-Randfälle, der Gradiententest des
+Transformers, Checkpoint-Wiederaufnahme, Listen/Text und ein Fuzz-/Modelltest für die Sprache. CI läuft auf Linux (gcc, clang,
 Sanitizer), macOS und Windows.
 
 ## Aktueller Stand der Dateien
