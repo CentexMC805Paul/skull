@@ -1,0 +1,6 @@
+// BPE-Training ohne 500-Merge-Limit: bpe_vocab = 1000 wird erreicht
+// (frueher kappte train_bpe still bei 500 Merges, also bei 756 Tokens).
+// Danach wird mit dem gespeicherten Tokenizer generiert (Neuaufbau aus den 744 Merges).
+define model M { dim = 4 }
+train M { data = "data/bpe_words.txt"  out = "data/bpe_not_capped.weights"  epochs = 1  rate = 0.05  bpe = true  bpe_vocab = 1000  steps = 400 }
+generate M { weights = "data/bpe_not_capped.weights"  prompt = "Rune ungfehoda"  tokens = 20  temperature = 0 }

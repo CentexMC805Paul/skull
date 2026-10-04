@@ -29,6 +29,10 @@ size as before; most of the "v1.0.0" feature list below was announced but never 
   weight files were accepted silently (header and file size are validated now).
 - **BPE** training could not be used for generation (tokenizer was not saved). The BPE merges are
   now stored in the weights file (optional trailing `TOKB` section; older files stay readable).
+- **BPE training silently stopped at 500 merges**: `bpe_vocab = 1000` produced only 756 tokens
+  (256 bytes + 500 merges). The limit is gone; training now ends only when the vocabulary reaches
+  `bpe_vocab` or no pair occurs at least twice any more (in that case it says so instead of
+  stopping quietly).
 - **Errors now end the program with exit code 1** (missing data file, bad weights, empty file, …).
   Before, `train` with a missing file printed an error and exited with 0.
 - **Interpreter**: `return` outside a function crashed (abort); unbounded recursion crashed
@@ -105,6 +109,21 @@ Measured on Tiny Shakespeare (1.1 MB), dim 64, 2 layers, 4 heads, context 64, ba
 - **Transformer training uses a learning-rate schedule** (short linear warm-up, then cosine decay
   to 10 % of `rate`). With a constant rate the loss kept jittering around its floor and about one
   run in twenty ended with a visibly worse model; `rate` is now the peak learning rate.
+- **BPE tokenizer rewritten for speed and correctness** (`src/tokenizer.h`). Tokens are integer IDs
+  instead of strings, the text lives in a doubly linked list, pair counts are updated
+  incrementally around each merge (max-heap with lazy deletion) instead of being recounted from
+  scratch, and `encode` uses a min-heap over merge ranks (O(n log n)) instead of applying every
+  merge to the whole text, and training hands back the encoded training text instead of encoding
+  it a second time. On ~250 KB of text the old code needed 13.6 s (training, capped at 500 merges)
+  plus 1.5 s (encoding); the new code takes 0.05 s plus 0.05 s for a 1000-token vocabulary, and
+  1 MB takes about 0.3 s plus 0.3 s. The result is exactly that of the plain definition
+  (most frequent pair, ties broken by the smaller token IDs, non-overlapping left-to-right
+  replacement); `tests/bpecheck.cpp` checks this against a deliberately naive reference on
+  thousands of random small corpora (including `aaaa` / `abab` style repeats). The `TOKB` file
+  format is unchanged, and files written by older versions load and encode exactly as before.
+  One deliberate difference for new training runs: when two pairs are equally frequent, the one
+  with the smaller token IDs wins (the old code compared the token strings), so a freshly trained
+  vocabulary can differ from one trained by an older build on the same data.
 - Tests are self-contained: each training test writes its own weights file. They used to share
   files, and this **did** fail on macOS CI (`train_all_data` read weights overwritten by
   `train_steps_window` when `ctest` ran tests in parallel). The examples that share one file are

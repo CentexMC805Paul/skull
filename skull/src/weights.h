@@ -105,10 +105,7 @@ inline bool get_str(std::istream& in, std::string& s) {
 inline BPETokenizer rebuild_bpe(const std::vector<std::pair<std::string, std::string>>& merges) {
     BPETokenizer tok;
     for (int i = 0; i < 256; ++i) tok.add_token(std::string(1, (char)i));
-    for (const auto& m : merges) {
-        tok.add_token(m.first + m.second);
-        tok.merges.push_back(m);
-    }
+    for (const auto& m : merges) tok.add_merge(m.first, m.second);   // Token a+b anlegen + Merge merken
     return tok;
 }
 
