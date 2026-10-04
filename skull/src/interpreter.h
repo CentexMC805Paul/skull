@@ -401,6 +401,7 @@ private:
             warn_fields("train", n->model_name, names,
                         {"data", "out", "epochs", "rate", "batch", "dim", "vocab", "steps",
                          "context", "heads", "layers", "val", "patience", "threads",
+                         "seed", "checkpoint", "stop_after", "resume",
                          "bpe", "bpe_vocab", "gpu", "prefer_amd"}, {});
             for (const auto& f : n->fields) {
                 SkullValue val = eval_expr(f.value.get(), env);
@@ -418,6 +419,10 @@ private:
                 if (f.name == "val")        cfg.val        = val.as_number(f.line);
                 if (f.name == "patience")   cfg.patience   = to_int(val, f.line, "patience");
                 if (f.name == "threads")    cfg.threads    = to_int(val, f.line, "threads");
+                if (f.name == "seed")       cfg.seed       = (unsigned)to_size(val, f.line, "seed");
+                if (f.name == "checkpoint") cfg.checkpoint = to_int(val, f.line, "checkpoint");
+                if (f.name == "stop_after") cfg.stop_after = to_int(val, f.line, "stop_after");
+                if (f.name == "resume")     cfg.resume_path = val.as_string(f.line);
                 if (f.name == "bpe")        cfg.use_bpe    = val.is_truthy();
                 if (f.name == "bpe_vocab")  cfg.bpe_vocab  = to_int(val, f.line, "bpe_vocab");
                 if (f.name == "gpu")        cfg.use_gpu    = val.is_truthy();
@@ -440,7 +445,7 @@ private:
             for (const auto& f : n->fields) names.push_back({f.name, f.line});
             warn_fields("generate", n->model_name, names,
                         {"weights", "prompt", "tokens", "temperature", "dim", "vocab",
-                         "context", "heads", "layers", "shift"}, {});
+                         "context", "heads", "layers", "shift", "seed", "top_k", "top_p"}, {});
             for (const auto& f : n->fields) {
                 SkullValue val = eval_expr(f.value.get(), env);
                 if (f.name == "weights")     cfg.weights_path = val.as_string(f.line);
@@ -453,6 +458,9 @@ private:
                 if (f.name == "heads")       cfg.heads        = to_size(val, f.line, "heads");
                 if (f.name == "layers")      cfg.layers       = to_size(val, f.line, "layers");
                 if (f.name == "shift")       cfg.shift        = val.is_truthy();
+                if (f.name == "seed")        { cfg.seed = (unsigned)to_size(val, f.line, "seed"); cfg.has_seed = true; }
+                if (f.name == "top_k")       cfg.top_k        = to_size(val, f.line, "top_k");
+                if (f.name == "top_p")       cfg.top_p        = val.as_number(f.line);
             }
             try {
                 skull_generate(cfg);

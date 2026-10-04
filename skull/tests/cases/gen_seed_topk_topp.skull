@@ -1,0 +1,4 @@
+// seed + top_k + top_p: Banner zeigt die Einstellungen, Ausgabe laeuft
+define model M { dim = 16  context = 8  heads = 2 }
+train M { data = "data/repeat.txt"  out = "data/seed_tp.weights"  epochs = 20  rate = 0.01  batch = 2 }
+generate M { weights = "data/seed_tp.weights"  prompt = "das"  tokens = 30  temperature = 0.9  seed = 5  top_k = 5  top_p = 0.9 }

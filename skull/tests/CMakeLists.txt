@@ -35,8 +35,10 @@ endfunction()
 skull_cpp_test(transformer_gradcheck gradcheck.cpp)
 # Zufallszahlen muessen auf jedem System gleich sein (src/rng.h)
 skull_cpp_test(rng_platform_independent rngcheck.cpp)
-# Trainingsrahmen: bestes Validierungs-Modell, Early Stopping, Datenaufteilung
+# Trainingsrahmen: bestes Validierungs-Modell, Early Stopping, Datenaufteilung, Checkpoints
 skull_cpp_test(training_framework traincheck.cpp WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+# Sampling: seed, top_k, top_p
+skull_cpp_test(generator_sampling gencheck.cpp WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
 
 # ---- C++-Test: BPE-Tokenizer (src/tokenizer.h) gegen eine naive Referenz ----
 add_executable(skull_bpecheck bpecheck.cpp)
@@ -148,3 +150,13 @@ skull_case(val_patience_without_val cases/val_patience_without_val.skull MATCH "
 skull_case(val_last_loss_before_train cases/val_last_loss_before_train.skull EXIT 1 MATCH "last_loss\\(\\): es lief noch kein train")
 skull_case(gen_shift                cases/gen_shift.skull                MATCH "Transformer.*--- Ende ---")
 skull_case(gen_long_transformer     cases/gen_long_transformer.skull     MATCH "Transformer.*--- Ende ---")
+
+# ---- Checkpoints, seed, Sampling ----
+skull_case(ckpt_resume              cases/ckpt_resume.skull              MATCH "Pausiert nach Epoche 2.*Fortgesetzt aus data/ckpt_a.weights.ckpt: Epoche 2 war abgeschlossen, weiter ab Epoche 3.*EPOCHEN GESAMT: true")
+skull_case(ckpt_periodic            cases/ckpt_periodic.skull            MATCH "weiter ab Epoche 6")
+skull_case(ckpt_missing             cases/ckpt_missing.skull             EXIT 1 MATCH "Checkpoint nicht gefunden")
+skull_case(ckpt_wrong_model         cases/ckpt_wrong_model.skull         EXIT 1 MATCH "gehoert zu einem Transformer")
+skull_case(ckpt_stop_ignored        cases/ckpt_stop_ignored.skull        MATCH "'stop_after' \\(5\\) ist nicht kleiner als 'epochs' \\(2\\)")
+skull_case(gen_seed_topk_topp       cases/gen_seed_topk_topp.skull       MATCH "Seed:     5.*Top-k:    5.*Top-p:    0.9.*--- Ende ---")
+skull_case(gen_top_p_bad            cases/gen_top_p_bad.skull            EXIT 1 MATCH "'top_p' muss groesser als 0")
+skull_case(train_seed               cases/train_seed.skull               MATCH "SEED OK")

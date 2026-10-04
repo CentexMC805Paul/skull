@@ -6,7 +6,9 @@
 //    - welches Modell gespeichert wird (bestes Validierungs-Modell, nicht das letzte)
 //    - Early Stopping (patience)
 //    - Aufteilung in Training und Validierung (split_data)
-//  Dazu: Parallelisierung (threads.h, Slots) muss exakt und thread-unabhaengig sein.
+//    - Parallelisierung (threads.h, Slots) muss exakt und thread-unabhaengig sein
+//    - Checkpoints: pausieren + fortsetzen == durchgehender Lauf (bitgleich), kaputte oder
+//      unpassende Checkpoints werden abgelehnt
 //  Das Echtzeit-Verhalten auf echten Daten (Ueberanpassung usw.) zeigen die
 //  Skript-Tests; hier geht es um die Logik, die nicht vom Zufall abhaengen darf.
 //
@@ -15,6 +17,8 @@
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <atomic>
 #include <vector>
 #include <string>
@@ -44,12 +48,30 @@ public:
         w.W_out.assign(w.dim * w.vocab, 0.0);
         return w;
     }
+    uint32_t kind() const override { return ckpt::KIND_BIGRAM; }
+    void save_state(std::ostream& o) const override { weights_detail::put_u64(o, (uint64_t)epoch_); }
+    void load_state(std::istream& in) override {
+        uint64_t e = 0;
+        if (!weights_detail::get_u64(in, e)) throw std::runtime_error("Mock: Zustand unlesbar");
+        epoch_ = (size_t)e;
+    }
 private:
     std::vector<double> val_;
     size_t epoch_ = 0;
 };
 
 static std::string tmp_path(const char* name) { return std::string("traincheck_") + name + ".weights"; }
+static bool file_exists(const std::string& p) { std::ifstream f(p, std::ios::binary); return (bool)f; }
+static std::string slurp(const std::string& p) {
+    std::ifstream f(p, std::ios::binary);
+    std::ostringstream os;
+    os << f.rdbuf();
+    return os.str();
+}
+static void spit(const std::string& p, const std::string& bytes) {
+    std::ofstream f(p, std::ios::binary);
+    f.write(bytes.data(), (std::streamsize)bytes.size());
+}
 
 static TrainResult run(int epochs, int patience, std::vector<double> val_seq, bool with_val,
                        const char* name, size_t& saved_dim) {
@@ -153,6 +175,165 @@ static void check_trainer_threads() {
     expect(r.second.front() > r.second[2], "der Loss sinkt waehrend des Trainings");
 }
 
+// ---- Checkpoints mit dem Mock-Modell: Zustand des Rahmens ----
+static void check_checkpoints_mock() {
+    std::printf("Checkpoints: Zustand des Trainingsrahmens\n");
+    const std::vector<double> curve = {3.0, 2.0, 1.0, 1.5, 1.2, 1.3, 1.4, 1.45};   // Bestwert in Epoche 3
+    const std::vector<int> val_ids = {1, 2, 3, 4};
+    const uint64_t H = 777;
+
+    // Durchgehender Lauf als Referenz
+    TrainConfig full; full.epochs = 8; full.patience = 0; full.out_path = tmp_path("ck_full");
+    MockModel m0(curve);
+    TrainResult r0 = run_training(full, m0, val_ids, full.out_path, H);
+
+    // Pause nach Epoche 5, danach fortsetzen
+    TrainConfig part = full; part.out_path = tmp_path("ck_part"); part.stop_after = 5;
+    MockModel m1(curve);
+    TrainResult r1 = run_training(part, m1, val_ids, part.out_path, H);
+    expect(r1.paused && r1.epochs_run == 5, "stop_after = 5: nach Epoche 5 pausiert");
+    expect(file_exists(part.out_path + ".ckpt"), "Checkpoint wurde geschrieben");
+    expect(load_weights(part.out_path).dim == 3, "Zwischengewichte = bestes Modell bis dahin (Epoche 3)");
+
+    TrainConfig cont = part; cont.stop_after = 0; cont.resume_path = part.out_path + ".ckpt";
+    MockModel m2(curve);
+    TrainResult r2 = run_training(cont, m2, val_ids, cont.out_path, H);
+    expect(!r2.paused && r2.epochs_run == 8, "fortgesetzt bis Epoche 8");
+    expect(r2.best_epoch == r0.best_epoch && r2.val_loss == r0.val_loss && r2.train_loss == r0.train_loss,
+           "Ergebnis (beste Epoche, Val-Loss, Train-Loss) identisch zum durchgehenden Lauf");
+    expect(r2.best_epoch == 3, "das beste Modell vor der Pause (Epoche 3) bleibt erhalten");
+    expect(slurp(full.out_path) == slurp(cont.out_path), "gespeicherte Gewichte byte-identisch zum durchgehenden Lauf");
+
+    // Geduld ueber die Pause hinweg: Epoche 4 und 5 schlechter (vor der Pause), 6 wieder (nach der Pause)
+    TrainConfig pp = full; pp.patience = 3; pp.stop_after = 5; pp.out_path = tmp_path("ck_pat");
+    MockModel m3(curve);
+    TrainResult rp1 = run_training(pp, m3, val_ids, pp.out_path, H);
+    TrainConfig pc = pp; pc.stop_after = 0; pc.resume_path = pp.out_path + ".ckpt";
+    MockModel m4(curve);
+    TrainResult rp2 = run_training(pc, m4, val_ids, pc.out_path, H);
+    TrainConfig pref = full; pref.patience = 3; pref.out_path = tmp_path("ck_patref");
+    MockModel m5(curve);
+    TrainResult rref = run_training(pref, m5, val_ids, pref.out_path, H);
+    expect(rp1.paused && rp2.stopped_early && rp2.epochs_run == rref.epochs_run && rref.epochs_run == 6,
+           "Early Stopping greift nach der Pause genauso wie im durchgehenden Lauf (Epoche 6)");
+
+    // periodische Checkpoints
+    TrainConfig per = full; per.checkpoint = 3; per.out_path = tmp_path("ck_per");
+    MockModel m6(curve);
+    run_training(per, m6, val_ids, per.out_path, H);
+    expect(file_exists(per.out_path + ".ckpt"), "checkpoint = 3: Checkpoint vorhanden (auch am Ende)");
+
+    std::printf("Checkpoints: Ablehnung unpassender oder kaputter Dateien\n");
+    auto fails_with = [&](TrainConfig c, uint64_t hash, const char* needle) {
+        MockModel m(curve);
+        try { run_training(c, m, val_ids, tmp_path("ck_never"), hash); }
+        catch (const std::runtime_error& e) { return std::string(e.what()).find(needle) != std::string::npos; }
+        return false;
+    };
+    TrainConfig bad = full; bad.resume_path = part.out_path + ".ckpt";
+    expect(fails_with(bad, H + 1, "passt nicht zu den aktuellen Daten"), "andere Daten (Hash) -> abgelehnt");
+    bad.resume_path = tmp_path("ck_gibtsnicht") + ".ckpt";
+    expect(fails_with(bad, H, "nicht gefunden"), "fehlende Datei -> abgelehnt");
+    const std::string good = slurp(part.out_path + ".ckpt");
+    spit(tmp_path("ck_trunc") + ".ckpt", good.substr(0, good.size() / 2));
+    bad.resume_path = tmp_path("ck_trunc") + ".ckpt";
+    expect(fails_with(bad, H, "abgeschnitten"), "abgeschnittene Datei -> abgelehnt");
+    spit(tmp_path("ck_junk") + ".ckpt", "das ist kein checkpoint");
+    bad.resume_path = tmp_path("ck_junk") + ".ckpt";
+    expect(fails_with(bad, H, "Magic"), "Datei ohne Magic -> abgelehnt");
+
+    for (const char* n : {"ck_full", "ck_part", "ck_pat", "ck_patref", "ck_per"}) {
+        std::remove(tmp_path(n).c_str());
+        std::remove((tmp_path(n) + ".ckpt").c_str());
+    }
+    std::remove((tmp_path("ck_trunc") + ".ckpt").c_str());
+    std::remove((tmp_path("ck_junk") + ".ckpt").c_str());
+}
+
+// ---- Pausieren + Fortsetzen mit ECHTEN Modellen == durchgehender Lauf (bitgleich) ----
+static std::string real_data_file() {
+    const std::string path = "traincheck_data.txt";
+    std::ofstream f(path);
+    std::string text;
+    for (int i = 0; i < 60; ++i)
+        text += "zeile " + std::to_string(i % 7) + ": das ist ein kleiner test fuer skull, nummer " + std::to_string(i * 13 % 10) + ".\n";
+    f << text;
+    return path;
+}
+
+static void check_resume_real_models() {
+    std::printf("Pausieren + Fortsetzen == durchgehender Lauf (echte Modelle, bitgleich)\n");
+    const std::string data = real_data_file();
+
+    struct Variant { const char* name; size_t context; int threads; int batch; unsigned seed; size_t steps; };
+    const Variant variants[] = {
+        {"Bigram",                              1, 1, 1, 42, 0},
+        {"Bigram, batch 4, seed 7",             1, 1, 4, 7,  0},
+        {"Bigram mit steps (zufaellige Fenster)", 1, 1, 2, 11, 150},
+        {"Transformer, 1 Thread",               8, 1, 4, 42, 0},
+        {"Transformer, 3 Threads, seed 9",      8, 3, 6, 9,  0},
+        {"Transformer mit steps",               8, 2, 3, 5,  200},
+    };
+    for (const auto& v : variants) {
+        TrainConfig base;
+        base.data_path = data; base.epochs = 6; base.rate = 0.01; base.dim = 16; base.vocab = 256;
+        base.context = v.context; base.heads = v.context > 1 ? 2 : 0; base.layers = v.context > 1 ? 2 : 0;
+        base.threads = v.threads; base.batch = v.batch; base.seed = v.seed; base.val = 0.1; base.steps = v.steps;
+
+        TrainConfig a = base; a.out_path = "traincheck_a.weights";
+        skull_train(a);
+
+        TrainConfig b = base; b.out_path = "traincheck_b.weights"; b.stop_after = 3;
+        TrainResult rb = skull_train(b);
+        TrainConfig c = base; c.out_path = "traincheck_b.weights"; c.resume_path = "traincheck_b.weights.ckpt";
+        skull_train(c);
+
+        expect(rb.paused, std::string(v.name) + ": nach Epoche 3 pausiert");
+        expect(slurp(a.out_path) == slurp(c.out_path),
+               std::string(v.name) + ": Gewichte nach Pause + Fortsetzen byte-identisch zum durchgehenden Lauf");
+    }
+
+    // Seed: gleicher Seed = gleiche Gewichte, anderer Seed = andere
+    {
+        TrainConfig base;
+        base.data_path = data; base.epochs = 2; base.rate = 0.01; base.dim = 16; base.context = 8; base.heads = 2;
+        base.layers = 1; base.batch = 2; base.val = 0.0;
+        TrainConfig s1 = base; s1.seed = 5;  s1.out_path = "traincheck_s1.weights";
+        TrainConfig s2 = base; s2.seed = 5;  s2.out_path = "traincheck_s2.weights";
+        TrainConfig s3 = base; s3.seed = 6;  s3.out_path = "traincheck_s3.weights";
+        skull_train(s1); skull_train(s2); skull_train(s3);
+        expect(slurp(s1.out_path) == slurp(s2.out_path), "gleicher seed -> byte-identische Gewichte");
+        expect(slurp(s1.out_path) != slurp(s3.out_path), "anderer seed -> andere Gewichte");
+    }
+
+    // Checkpoint eines anderen Modelltyps / anderer Daten wird abgelehnt
+    {
+        TrainConfig base;
+        base.data_path = data; base.epochs = 4; base.rate = 0.01; base.dim = 16; base.context = 8; base.heads = 2;
+        base.layers = 1; base.val = 0.1; base.out_path = "traincheck_t.weights"; base.stop_after = 2;
+        skull_train(base);
+        auto rejected = [&](TrainConfig c, const char* needle) {
+            try { skull_train(c); } catch (const std::runtime_error& e) { return std::string(e.what()).find(needle) != std::string::npos; }
+            return false;
+        };
+        TrainConfig bigram = base; bigram.context = 1; bigram.stop_after = 0; bigram.out_path = "traincheck_t2.weights";
+        bigram.resume_path = "traincheck_t.weights.ckpt";
+        expect(rejected(bigram, "gehoert zu einem Transformer"), "Transformer-Checkpoint fuer ein Bigram-Training -> abgelehnt");
+        TrainConfig other = base; other.stop_after = 0; other.val = 0.0; other.out_path = "traincheck_t3.weights";
+        other.resume_path = "traincheck_t.weights.ckpt";
+        expect(rejected(other, "passt nicht zu den aktuellen Daten"), "anderer val-Anteil (andere Aufteilung) -> abgelehnt");
+        TrainConfig dims = base; dims.stop_after = 0; dims.dim = 24; dims.out_path = "traincheck_t4.weights";
+        dims.resume_path = "traincheck_t.weights.ckpt";
+        expect(rejected(dims, "Parameterzahl"), "andere Modellgroesse -> abgelehnt");
+    }
+
+    for (const char* n : {"a", "b", "s1", "s2", "s3", "t", "t2", "t3", "t4"}) {
+        std::remove((std::string("traincheck_") + n + ".weights").c_str());
+        std::remove((std::string("traincheck_") + n + ".weights.ckpt").c_str());
+    }
+    std::remove(data.c_str());
+}
+
 int main() {
     // Validierungs-Loss: faellt bis Epoche 3 (1.0), steigt danach wieder (Ueberanpassung)
     const std::vector<double> curve = {3.0, 2.0, 1.0, 1.5, 1.2, 1.3, 1.4, 1.45};
@@ -246,6 +427,8 @@ int main() {
     check_parallel_slots();
     check_adam_chunks();
     check_trainer_threads();
+    check_checkpoints_mock();
+    check_resume_real_models();
 
     if (failures) { std::printf("\n%d Pruefung(en) fehlgeschlagen\n", failures); return 1; }
     std::printf("\nAlle Pruefungen bestanden\n");

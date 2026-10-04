@@ -76,6 +76,18 @@ Measured on Tiny Shakespeare (1.1 MB), dim 64, 2 layers, 4 heads, context 64, ba
 
 ### ➕ Added
 
+- **Checkpoints / resume** (`checkpoint`, `stop_after`, `resume`): the complete training state
+  (weights, Adam moments, RNG state, learning-rate position, best-so-far model and the early-stopping
+  counter) is saved atomically (`.tmp` then rename) and restored. **A paused and resumed run produces
+  byte-identical weights to an uninterrupted one** (tested for bigram and transformer, with batches,
+  `steps` windows and different thread counts). A mutation test confirmed each restored piece of state
+  is actually checked. Mismatching checkpoints (other model kind or size, other data / `val` / `bpe`,
+  truncated or corrupt file) are rejected with a clear message.
+- **`seed`** for `train` (initial weights and window order; default 42, so existing behaviour is
+  unchanged) and for `generate` (reproducible sampling).
+- **`top_k` / `top_p`** sampling for `generate` (deterministic tie-breaking by token id). While adding
+  them I fixed `sample()`: when rounding made the cumulative sum fall short it could return the last
+  token of the vocabulary even with probability 0; it now returns the last token with p > 0.
 - **KV cache for generation** (`Transformer::prefill()` / `step()`): a new token only computes its own
   row. The logits are bit-identical to a full forward pass (`tests/gradcheck.cpp`). Default mode is
   exact (output unchanged; the cache helps until the context is full, after that every token needs a

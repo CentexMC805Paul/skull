@@ -35,6 +35,8 @@ train Mini { data = "text.txt"  out = "mini.weights"  epochs = 200  rate = 0.003
   Hand, gegen endliche Differenzen geprüft.
 - Zufallszahlen sind auf jedem System identisch (`rng.h`): gleicher Seed = gleiche Startgewichte.
 - Alle Tokens pro Epoche (oder Fenster mit `steps`), echtes Mini-Batch, BPE optional.
+- `seed`, Pausieren/Fortsetzen (`stop_after`, `resume`, `checkpoint`): bitgleich zu einem durchgehenden Lauf.
+- Generieren: `seed`, `top_k`, `top_p`, KV-Cache, `shift`.
 - Validierung (letzte 10 % der Daten): Val-Loss und Perplexität pro Epoche, bestes Modell wird
   gespeichert, optional Early Stopping (`patience`). `last_loss()`, `last_val_loss()` im Skript.
 - Konstanter Speicherbedarf, kein Autograd-Graph im Trainingsschritt.
@@ -80,9 +82,7 @@ skull/tests/        — ctest-Fälle, gradcheck.cpp (Gradiententest)
 ```
 
 ## Nächste Schritte (Priorität)
-1. Geschwindigkeit des Transformers: mehrere Threads über die Sequenzen eines Batches, `float`
-   statt `double`, gepufferte Matrixmultiplikation.
-2. Generierung: Top-k/Top-p-Sampling, KV-Cache (heute wird bei jedem Token der ganze Kontext neu gerechnet).
-3. Sprache: Listen, Strings indizieren.
-4. GPU-Rechnen: die OpenCL-Kernel in `gpu.h` an den Transformer anbinden und gegen die CPU prüfen.
-5. Validierungsdaten und Checkpoints während des Trainings.
+1. Weitere Geschwindigkeit: `float` statt `double`, schnelleres GELU, Parallelität auch bei `batch = 1`.
+2. Sprache: Listen, Strings indizieren.
+3. GPU-Rechnen: die OpenCL-Kernel in `gpu.h` an den Transformer anbinden und gegen die CPU prüfen.
+4. Größere Modelle und Daten testen (Streaming großer Dateien, Gewichte als `float` speichern).

@@ -19,6 +19,7 @@
 #include "transformer.h"
 #include "rng.h"
 #include "threads.h"
+#include "checkpoint.h"
 #include "version.h"
 
 // ============================================================
@@ -47,7 +48,8 @@
 //
 //  Optionen (train { ... }):
 //    data, out, epochs, rate, batch, dim, vocab, steps, context, heads, layers,
-//    val, patience, threads, bpe, bpe_vocab, gpu, prefer_amd
+//    val, patience, threads, seed, checkpoint, stop_after, resume,
+//    bpe, bpe_vocab, gpu, prefer_amd
 //  out = Pfad der Gewichte-Datei (Standard: data + ".weights").
 //  steps = 0 (Standard): jede Epoche geht durch ALLE Tokens.
 //  steps > 0: pro Epoche nur so viele Token-Schritte (zufaellige Fenster),
@@ -59,6 +61,12 @@
 //  Validierungs-Loss gespeichert.
 //  patience = Abbruch, wenn sich der Validierungs-Loss N Epochen lang nicht
 //  verbessert (0 = aus).
+//  seed = Zufallsstart fuer Startgewichte und Reihenfolge der Trainingsfenster (Standard 42).
+//  Gleicher Seed + gleiche Daten = gleiche Gewichte, auf jedem System und bei jeder Thread-Anzahl.
+//  checkpoint = alle N Epochen den kompletten Trainingszustand nach <out>.ckpt schreiben.
+//  stop_after = nach dieser (absoluten) Epoche pausieren und einen Checkpoint schreiben.
+//  resume = Pfad eines Checkpoints: Training dort fortsetzen (bitgleich zu einem durchgehenden
+//  Lauf, solange epochs, Daten und Einstellungen gleich bleiben).
 //  threads = Anzahl Rechen-Threads des Transformers (0 = alle Kerne). Parallel laufen die
 //  Sequenzen eines Batches (batch > 1) und die Validierung. Das Ergebnis ist unabhaengig von
 //  der Thread-Anzahl bitgleich (feste Slot-Zuordnung, siehe threads.h).
@@ -111,6 +119,10 @@ struct TrainConfig {
     double      val        = 0.1;     // Anteil Validierungsdaten (vom Dateiende), 0 = aus
     int         patience   = 0;       // Early Stopping nach N Epochen ohne Verbesserung, 0 = aus
     int         threads    = 0;       // nur Transformer: Anzahl Threads (0 = alle Kerne); aendert das Ergebnis nicht
+    unsigned    seed       = 42;      // Zufallsstart (Gewichte, Reihenfolge der Trainingsfenster)
+    int         checkpoint = 0;       // alle N Epochen Checkpoint schreiben (0 = aus)
+    int         stop_after = 0;       // nach dieser Epoche pausieren (0 = bis epochs)
+    std::string resume_path = "";     // Checkpoint, ab dem fortgesetzt wird
     bool        use_bpe    = false;   // BPE-Tokenisierung aktivieren
     int         bpe_vocab  = 1000;    // BPE Ziel-Vokabular
     bool        use_gpu    = false;   // GPU via OpenCL (derzeit nur initialisiert)
@@ -125,6 +137,7 @@ struct TrainResult {
     int    best_epoch  = 0;
     int    epochs_run  = 0;
     bool   stopped_early = false;
+    bool   paused        = false;     // durch stop_after angehalten (Checkpoint geschrieben)
 };
 
 inline std::string weights_path_for(const TrainConfig& cfg) {
@@ -142,7 +155,23 @@ public:
     virtual double evaluate(const std::vector<int>& ids) = 0;
     // Aktuelle Gewichte inkl. Tokenizer als speicherbares Paket.
     virtual SkullWeights export_weights() const = 0;
+    // Kompletter Trainingszustand (Gewichte, Optimierer, Zufallsgenerator ...) fuer Checkpoints.
+    virtual uint32_t kind() const = 0;
+    virtual void save_state(std::ostream& o) const = 0;
+    virtual void load_state(std::istream& in) = 0;
 };
+
+// std::mt19937 <-> Text (der Standard legt das Format fest, es ist auf jedem System gleich)
+inline std::string rng_to_string(const std::mt19937& g) {
+    std::ostringstream os;
+    os << g;
+    return os.str();
+}
+inline void rng_from_string(std::mt19937& g, const std::string& text) {
+    std::istringstream is(text);
+    is >> g;
+    if (!is) throw std::runtime_error("Checkpoint: Zufallsgenerator-Zustand unlesbar");
+}
 
 // ---- Aufteilen in Training und Validierung ----
 struct DataSplit {
@@ -178,15 +207,15 @@ inline DataSplit split_data(const std::vector<int>& ids, double val_fraction) {
 class BigramModel : public TrainableModel {
 public:
     BigramModel(const TrainConfig& cfg, size_t vocab, const std::vector<int>& ids, const BPETokenizer* bpe)
-        : cfg_(cfg), ids_(ids), dim_(cfg.dim), vocab_(vocab), window_rng_(12345) {
+        : cfg_(cfg), ids_(ids), dim_(cfg.dim), vocab_(vocab), window_rng_(cfg.seed + 12303u) {
         n_pairs_      = ids_.size() - 1;
         steps_per_ep_ = (cfg_.steps > 0 && cfg_.steps < n_pairs_) ? cfg_.steps : n_pairs_;
 
         w_.dim      = dim_;
         w_.vocab    = vocab_;
-        w_.W_embed  = xavier_init(vocab_, dim_,  42);
-        w_.W_hidden = xavier_init(dim_,   dim_,  43);
-        w_.W_out    = xavier_init(dim_,   vocab_, 44);
+        w_.W_embed  = xavier_init(vocab_, dim_,   cfg.seed);
+        w_.W_hidden = xavier_init(dim_,   dim_,   cfg.seed + 1u);
+        w_.W_out    = xavier_init(dim_,   vocab_, cfg.seed + 2u);
         if (bpe) { w_.has_bpe = true; w_.bpe = *bpe; }
 
         embed_.assign(dim_, 0.0); hidden_.assign(dim_, 0.0); d_pre_.assign(dim_, 0.0); d_embed_.assign(dim_, 0.0);
@@ -268,6 +297,22 @@ public:
     }
 
     SkullWeights export_weights() const override { return w_; }
+
+    uint32_t kind() const override { return ckpt::KIND_BIGRAM; }
+    void save_state(std::ostream& o) const override {
+        ckpt::put_blob(o, ckpt::weights_to_string(w_));
+        ckpt::put_blob(o, rng_to_string(window_rng_));
+    }
+    void load_state(std::istream& in) override {
+        std::string wb, rb;
+        if (!ckpt::get_blob(in, wb, ckpt::MAX_BLOB) || !ckpt::get_blob(in, rb, 1u << 20))
+            throw std::runtime_error("Checkpoint: Modellzustand abgeschnitten");
+        SkullWeights loaded = ckpt::weights_from_string(wb, "Checkpoint");
+        if (loaded.is_transformer || loaded.dim != dim_ || loaded.vocab != vocab_)
+            throw std::runtime_error("Checkpoint passt nicht zum Modell (dim/vocab)");
+        w_ = std::move(loaded);
+        rng_from_string(window_rng_, rb);
+    }
 
 private:
     // Vorwaerts fuer ein Eingabe-Token; Ergebnis: probs_ (Softmax), hidden_, embed_
@@ -369,8 +414,8 @@ public:
     TransformerTrainer(const TrainConfig& cfg, const TransformerConfig& tc,
                        const std::vector<int>& ids, const BPETokenizer* bpe)
         : cfg_(cfg), tc_(tc), ids_(ids), model_(tc),
-          opt_(tc.param_count(), cfg.rate, 1.0), rng_(12345) {
-        model_.init(42);
+          opt_(tc.param_count(), cfg.rate, 1.0), rng_(cfg.seed + 12303u) {
+        model_.init(cfg.seed);
         n_pairs_ = ids_.size() - 1;
         T_       = tc_.context;
         const size_t pairs_per_epoch = (cfg_.steps > 0 && cfg_.steps < n_pairs_) ? cfg_.steps : n_pairs_;
@@ -491,6 +536,30 @@ public:
         return w;
     }
 
+    uint32_t kind() const override { return ckpt::KIND_TRANSFORMER; }
+    void save_state(std::ostream& o) const override {
+        ckpt::put_doubles(o, model_.params);
+        ckpt::put_doubles(o, opt_.moment1());
+        ckpt::put_doubles(o, opt_.moment2());
+        weights_detail::put_u64(o, (uint64_t)opt_.steps());
+        weights_detail::put_u64(o, (uint64_t)update_no_);
+        ckpt::put_blob(o, rng_to_string(rng_));
+    }
+    void load_state(std::istream& in) override {
+        const size_t P = tc_.param_count();
+        std::vector<double> params, m, v;
+        uint64_t adam_t = 0, upd = 0;
+        std::string rb;
+        if (!ckpt::get_doubles(in, params, P) || !ckpt::get_doubles(in, m, P) || !ckpt::get_doubles(in, v, P) ||
+            !weights_detail::get_u64(in, adam_t) || !weights_detail::get_u64(in, upd) ||
+            !ckpt::get_blob(in, rb, 1u << 20))
+            throw std::runtime_error("Checkpoint passt nicht zum Modell (Parameterzahl) oder ist abgeschnitten");
+        model_.params = std::move(params);
+        opt_.restore(m, v, (size_t)adam_t);
+        update_no_ = (size_t)upd;
+        rng_from_string(rng_, rb);
+    }
+
 private:
     TrainConfig cfg_;
     TransformerConfig tc_;
@@ -512,8 +581,11 @@ private:
 // ============================================================
 inline double perplexity(double loss) { return std::exp(loss); }
 
+inline std::string checkpoint_path_for(const TrainConfig& cfg) { return weights_path_for(cfg) + ".ckpt"; }
+
 inline TrainResult run_training(const TrainConfig& cfg, TrainableModel& model,
-                                const std::vector<int>& val_ids, const std::string& weights_path) {
+                                const std::vector<int>& val_ids, const std::string& weights_path,
+                                uint64_t data_hash = 0) {
     using clock = std::chrono::high_resolution_clock;
     const bool has_val = val_ids.size() >= 2;
     TrainResult res;
@@ -522,10 +594,48 @@ inline TrainResult run_training(const TrainConfig& cfg, TrainableModel& model,
     double best_val = std::numeric_limits<double>::infinity();
     int    best_epoch = 0, bad_epochs = 0;
     SkullWeights best;
+    int start_epoch = 1;
+
+    const std::string ckpt_path = checkpoint_path_for(cfg);
+    auto save_ckpt = [&](int epoch) {
+        ckpt::DriverState st;
+        st.epoch = epoch;
+        st.best_val = best_val;
+        st.last_loss = res.train_loss;
+        st.best_epoch = best_epoch;
+        st.bad_epochs = bad_epochs;
+        st.has_best = has_val && best_epoch > 0;
+        if (st.has_best) st.best = best;
+        std::ostringstream ms(std::ios::binary);
+        model.save_state(ms);
+        ckpt::write_checkpoint(ckpt_path, model.kind(), data_hash, st, ms.str());
+    };
+
+    // ---- Fortsetzen ----
+    if (!cfg.resume_path.empty()) {
+        std::string model_state;
+        ckpt::DriverState st = ckpt::read_checkpoint(cfg.resume_path, model.kind(), data_hash, model_state);
+        std::istringstream ms(model_state, std::ios::binary);
+        model.load_state(ms);
+        start_epoch = st.epoch + 1;
+        best_val    = st.best_val;
+        best_epoch  = st.best_epoch;
+        bad_epochs  = st.bad_epochs;
+        res.train_loss = st.last_loss;
+        res.epochs_run = st.epoch;
+        if (st.has_best) best = std::move(st.best);
+        std::cout << "[Skull] Fortgesetzt aus " << cfg.resume_path << ": Epoche " << st.epoch
+                  << " war abgeschlossen, weiter ab Epoche " << start_epoch << "\n";
+        if (start_epoch > cfg.epochs)
+            std::cout << "[Skull] Hinweis: der Checkpoint ist schon bei Epoche " << st.epoch
+                      << " (epochs = " << cfg.epochs << "); fuer mehr Training 'epochs' erhoehen\n";
+    }
+
     auto t_start = clock::now();
     auto seconds = [&]() { return std::chrono::duration<double>(clock::now() - t_start).count(); };
+    bool ckpt_written_this_epoch = false;
 
-    for (int epoch = 1; epoch <= cfg.epochs; ++epoch) {
+    for (int epoch = start_epoch; epoch <= cfg.epochs; ++epoch) {
         const double loss = model.train_epoch();
         if (!std::isfinite(loss))
             throw std::runtime_error(
@@ -548,7 +658,7 @@ inline TrainResult run_training(const TrainConfig& cfg, TrainableModel& model,
             }
         }
 
-        if (epoch == 1 || epoch % 10 == 0 || epoch == cfg.epochs) {
+        if (epoch == start_epoch || epoch % 10 == 0 || epoch == cfg.epochs) {
             std::cout << "Epoche " << epoch << "/" << cfg.epochs << "  |  Loss: " << loss;
             if (has_val)
                 std::cout << "  |  Val: " << v << " (Perplexitaet " << perplexity(v) << ")"
@@ -556,18 +666,36 @@ inline TrainResult run_training(const TrainConfig& cfg, TrainableModel& model,
             std::cout << "  |  Zeit: " << seconds() << "s\n";
         }
 
-        if (has_val && cfg.patience > 0 && bad_epochs >= cfg.patience && epoch < cfg.epochs) {
+        const bool early = has_val && cfg.patience > 0 && bad_epochs >= cfg.patience && epoch < cfg.epochs;
+        const bool pause = cfg.stop_after > 0 && epoch == cfg.stop_after && epoch < cfg.epochs;
+        ckpt_written_this_epoch = false;
+        if ((cfg.checkpoint > 0 && epoch % cfg.checkpoint == 0) || pause) {
+            save_ckpt(epoch);
+            ckpt_written_this_epoch = true;
+        }
+
+        if (early) {
             std::cout << "[Skull] Early Stopping nach Epoche " << epoch << ": seit " << bad_epochs
                       << " Epochen keine Verbesserung auf den Validierungsdaten\n";
             res.stopped_early = true;
             break;
         }
+        if (pause) {
+            std::cout << "[Skull] Pausiert nach Epoche " << epoch << " (stop_after). Fortsetzen mit: resume = \""
+                      << ckpt_path << "\"\n";
+            res.paused = true;
+            break;
+        }
     }
+
+    // Am Ende (auch nach Early Stopping) einen Checkpoint ablegen, falls Checkpoints gewuenscht sind
+    if ((cfg.checkpoint > 0 || cfg.stop_after > 0) && !ckpt_written_this_epoch && res.epochs_run >= start_epoch)
+        save_ckpt(res.epochs_run);
 
     std::cout << "\n[Skull] Training abgeschlossen! " << seconds() << "s\n";
 
     SkullWeights final_w;
-    if (has_val) {
+    if (has_val && best_epoch > 0) {
         res.val_loss   = best_val;
         res.best_epoch = best_epoch;
         final_w        = std::move(best);
@@ -607,6 +735,13 @@ inline TrainResult skull_train(const TrainConfig& cfg) {
         throw std::runtime_error("train: 'val' muss zwischen 0 und 0.5 liegen (Anteil der Daten, 0 = keine Validierung)");
     if (cfg.patience < 0)
         throw std::runtime_error("train: 'patience' muss >= 0 sein (0 = aus)");
+    if (cfg.checkpoint < 0)
+        throw std::runtime_error("train: 'checkpoint' muss >= 0 sein (0 = aus)");
+    if (cfg.stop_after < 0)
+        throw std::runtime_error("train: 'stop_after' muss >= 0 sein (0 = bis epochs)");
+    if (cfg.stop_after >= cfg.epochs && cfg.stop_after > 0)
+        std::cout << "[WARNUNG] 'stop_after' (" << cfg.stop_after << ") ist nicht kleiner als 'epochs' ("
+                  << cfg.epochs << ") und hat keine Wirkung\n";
     if (cfg.context <= 1 && (cfg.heads != 0 || cfg.layers != 0))
         std::cout << "[WARNUNG] 'heads' und 'layers' wirken nur mit context > 1 (Transformer); "
                      "ohne context trainiert Skull das Bigram-Modell\n";
@@ -676,5 +811,5 @@ inline TrainResult skull_train(const TrainConfig& cfg) {
     }
     model->print_info(ids.size());
 
-    return run_training(cfg, *model, split.val, weights_path_for(cfg));
+    return run_training(cfg, *model, split.val, weights_path_for(cfg), ckpt::hash_ids(split.train, split.val));
 }

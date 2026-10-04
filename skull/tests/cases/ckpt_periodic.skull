@@ -1,0 +1,3 @@
+define model M { dim = 8 }
+train M { data = "data/late.txt"  out = "data/ckpt_p.weights"  epochs = 5  rate = 0.05  checkpoint = 2 }
+train M { data = "data/late.txt"  out = "data/ckpt_p2.weights"  epochs = 7  rate = 0.05  resume = "data/ckpt_p.weights.ckpt" }

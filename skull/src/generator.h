@@ -48,6 +48,14 @@ struct GenerateConfig {
     // true = ist der Kontext voll, wird nur die juengere Haelfte behalten und neu aufgebaut; dadurch
     // bleibt jedes Token billig, das Modell sieht aber zeitweise nur context/2 bis context Token.
     bool        shift        = false;
+    // Zufall: ohne seed wird bei jedem Aufruf neu gewuerfelt; mit seed ist die Ausgabe reproduzierbar
+    // (auf jedem System dieselbe).
+    bool        has_seed     = false;
+    unsigned    seed         = 0;
+    // Sampling einschraenken (nur bei temperature > 0): top_k = nur die k wahrscheinlichsten Token
+    // (0 = aus), top_p = kleinste Menge wahrscheinlichster Token mit Summe >= p (1 = aus).
+    size_t      top_k        = 0;
+    double      top_p        = 1.0;
 };
 
 // Softmax mit Temperature (temperature muss > 0 sein)
@@ -61,15 +69,44 @@ inline void softmax_temp(FlatVec& v, double temperature) {
     for (auto& x : v) x /= sum;
 }
 
+// Schraenkt die Wahrscheinlichkeiten ein und normiert neu: erst top_k, dann top_p (Nucleus).
+// Die Sortierung ist total (Wahrscheinlichkeit absteigend, bei Gleichstand kleinere ID zuerst),
+// das Ergebnis also auf jedem System dasselbe.
+inline void filter_probs(FlatVec& p, size_t top_k, double top_p) {
+    const size_t n = p.size();
+    if (n == 0 || (top_k == 0 && top_p >= 1.0)) return;
+    std::vector<size_t> idx(n);
+    for (size_t i = 0; i < n; ++i) idx[i] = i;
+    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
+        return p[a] > p[b] || (p[a] == p[b] && a < b);
+    });
+    size_t keep = n;
+    if (top_k > 0 && top_k < keep) keep = top_k;
+    if (top_p < 1.0) {
+        double cum = 0.0;
+        for (size_t m = 0; m < keep; ++m) {
+            cum += p[idx[m]];
+            if (cum >= top_p) { keep = m + 1; break; }
+        }
+    }
+    double sum = 0.0;
+    for (size_t m = 0; m < keep; ++m) sum += p[idx[m]];
+    for (size_t m = keep; m < n; ++m) p[idx[m]] = 0.0;
+    if (sum > 0.0)
+        for (size_t m = 0; m < keep; ++m) p[idx[m]] /= sum;
+}
+
 // Naechstes Token sampeln (zufaellig nach Wahrscheinlichkeit)
 inline int sample(const FlatVec& probs, std::mt19937& rng) {
     double r = rng_uniform01(rng);
     double cumsum = 0.0;
+    int last_nonzero = 0;
     for (size_t i = 0; i < probs.size(); ++i) {
+        if (probs[i] > 0.0) last_nonzero = (int)i;
         cumsum += probs[i];
-        if (r <= cumsum) return (int)i;
+        if (r <= cumsum && probs[i] > 0.0) return (int)i;
     }
-    return (int)probs.size() - 1;
+    return last_nonzero;   // Rundung: nie ein herausgefiltertes Token (p = 0) liefern
 }
 
 inline int argmax(const FlatVec& v) {
@@ -106,61 +143,68 @@ inline FlatVec forward_token(int token_id, const SkullWeights& w) {
 }
 
 // Nur druckbare ASCII-Zeichen, Newline und Tab ausgeben; Rest als Leerzeichen.
-inline void print_safe(const std::string& s) {
+inline void print_safe(const std::string& s, std::ostream& out = std::cout) {
     for (char c : s) {
-        if ((c >= 32 && c <= 126) || c == '\n' || c == '\t') std::cout << c;
-        else std::cout << ' ';
+        if ((c >= 32 && c <= 126) || c == '\n' || c == '\t') out << c;
+        else out << ' ';
     }
 }
 
-inline void skull_generate(const GenerateConfig& cfg) {
+inline void skull_generate(const GenerateConfig& cfg, std::ostream& out = std::cout) {
     // Gewichte zuerst laden: Fehler (Datei fehlt/kaputt) sollen vor dem Banner kommen.
     SkullWeights w = load_weights(cfg.weights_path);
 
-    std::cout << "\n";
-    std::cout << "========================================\n";
-    std::cout << "  Skull Generator v" SKULL_VERSION "\n";
-    std::cout << "========================================\n";
-    std::cout << "  Gewichte: " << cfg.weights_path << "\n";
-    std::cout << "  Prompt:   \"" << cfg.prompt      << "\"\n";
-    std::cout << "  Tokens:   " << cfg.tokens       << "\n";
-    if (cfg.temperature > 0.0) std::cout << "  Temp:     " << cfg.temperature << "\n";
-    else                       std::cout << "  Temp:     " << cfg.temperature << " (greedy)\n";
-    std::cout << "========================================\n\n";
+    out << "\n";
+    out << "========================================\n";
+    out << "  Skull Generator v" SKULL_VERSION "\n";
+    out << "========================================\n";
+    out << "  Gewichte: " << cfg.weights_path << "\n";
+    out << "  Prompt:   \"" << cfg.prompt      << "\"\n";
+    out << "  Tokens:   " << cfg.tokens       << "\n";
+    if (cfg.temperature > 0.0) out << "  Temp:     " << cfg.temperature << "\n";
+    else                       out << "  Temp:     " << cfg.temperature << " (greedy)\n";
+    if (cfg.has_seed) out << "  Seed:     " << cfg.seed << "\n";
+    if (cfg.top_k > 0) out << "  Top-k:    " << cfg.top_k << "\n";
+    if (cfg.top_p < 1.0) out << "  Top-p:    " << cfg.top_p << "\n";
+    out << "========================================\n\n";
 
     if (cfg.tokens < 0)
         throw std::runtime_error("generate: 'tokens' darf nicht negativ sein");
     if (!std::isfinite(cfg.temperature))
         throw std::runtime_error("generate: 'temperature' muss eine endliche Zahl sein");
+    if (!(cfg.top_p > 0.0 && cfg.top_p <= 1.0))
+        throw std::runtime_error("generate: 'top_p' muss groesser als 0 und hoechstens 1 sein (1 = aus)");
+    if (cfg.temperature <= 0.0 && (cfg.top_k > 0 || cfg.top_p < 1.0))
+        out << "[WARNUNG] top_k/top_p wirken nur bei temperature > 0 (bei 0 wird immer das wahrscheinlichste Token genommen)\n";
 
-    std::cout << "[Skull] Gewichte geladen: " << w.dim << "d, vocab=" << w.vocab;
+    out << "[Skull] Gewichte geladen: " << w.dim << "d, vocab=" << w.vocab;
     if (w.is_transformer)
-        std::cout << ", Transformer (" << w.tcfg.layers << " Schicht(en), " << w.tcfg.heads
+        out << ", Transformer (" << w.tcfg.layers << " Schicht(en), " << w.tcfg.heads
                   << " Koepfe, Kontext " << w.tcfg.context << ")";
     else
-        std::cout << ", Bigram";
-    std::cout << (w.has_bpe ? ", BPE-Tokenizer" : ", Zeichen-Tokenizer") << "\n";
+        out << ", Bigram";
+    out << (w.has_bpe ? ", BPE-Tokenizer" : ", Zeichen-Tokenizer") << "\n";
     if (cfg.dim   != 0 && cfg.dim   != w.dim)
-        std::cout << "[WARNUNG] Modell definiert dim=" << cfg.dim
+        out << "[WARNUNG] Modell definiert dim=" << cfg.dim
                   << ", die Gewichte haben dim=" << w.dim << " (Gewichte gelten)\n";
     if (cfg.vocab != 0 && !w.has_bpe && cfg.vocab != w.vocab)
-        std::cout << "[WARNUNG] Modell definiert vocab=" << cfg.vocab
+        out << "[WARNUNG] Modell definiert vocab=" << cfg.vocab
                   << ", die Gewichte haben vocab=" << w.vocab << " (Gewichte gelten)\n";
     if (w.is_transformer) {
         if (cfg.context != 0 && cfg.context != w.tcfg.context)
-            std::cout << "[WARNUNG] Modell definiert context=" << cfg.context
+            out << "[WARNUNG] Modell definiert context=" << cfg.context
                       << ", die Gewichte haben context=" << w.tcfg.context << " (Gewichte gelten)\n";
         if (cfg.heads != 0 && cfg.heads != w.tcfg.heads)
-            std::cout << "[WARNUNG] Modell definiert heads=" << cfg.heads
+            out << "[WARNUNG] Modell definiert heads=" << cfg.heads
                       << ", die Gewichte haben heads=" << w.tcfg.heads << " (Gewichte gelten)\n";
         if (cfg.layers != 0 && cfg.layers != w.tcfg.layers)
-            std::cout << "[WARNUNG] Modell definiert layers=" << cfg.layers
+            out << "[WARNUNG] Modell definiert layers=" << cfg.layers
                       << ", die Gewichte haben layers=" << w.tcfg.layers << " (Gewichte gelten)\n";
     } else if (cfg.context > 1) {
-        std::cout << "[WARNUNG] Modell definiert context=" << cfg.context
+        out << "[WARNUNG] Modell definiert context=" << cfg.context
                   << ", die Gewichte sind aber ein Bigram-Modell (Kontext 1)\n";
     }
-    std::cout << "\n";
+    out << "\n";
 
     // Prompt in Token-IDs umwandeln
     std::vector<int> prompt_ids = w.has_bpe ? w.bpe.encode(cfg.prompt)
@@ -169,13 +213,13 @@ inline void skull_generate(const GenerateConfig& cfg) {
     for (auto& id : prompt_ids)
         if (id < 0 || (size_t)id >= w.vocab) { id = 0; ++clipped; }   // wie im Training
     if (clipped > 0)
-        std::cout << "[Skull] Hinweis: " << clipped << " Prompt-Token(s) liegen ausserhalb von vocab="
+        out << "[Skull] Hinweis: " << clipped << " Prompt-Token(s) liegen ausserhalb von vocab="
                   << w.vocab << " und werden als ID 0 behandelt\n";
 
     // Startpunkt: letztes Prompt-Token, sonst Leerzeichen (ID 32), falls im Vokabular
     int current = prompt_ids.empty() ? (w.vocab > 32 ? 32 : 0) : prompt_ids.back();
 
-    std::mt19937 rng(std::random_device{}());
+    std::mt19937 rng(cfg.has_seed ? cfg.seed : std::random_device{}());
 
     // Transformer: Verlauf der Token, Modell und KV-Cache (siehe transformer.h)
     std::unique_ptr<Transformer> tf;
@@ -194,9 +238,9 @@ inline void skull_generate(const GenerateConfig& cfg) {
         tlogits = tf->prefill(&history[history.size() - n0], n0, kv, tws);
     }
 
-    std::cout << "--- Ausgabe ---\n";
-    std::cout << cfg.prompt;
-    std::cout.flush();
+    out << "--- Ausgabe ---\n";
+    out << cfg.prompt;
+    out.flush();
 
     for (int t = 0; t < cfg.tokens; ++t) {
         FlatVec logits = tf ? tlogits : forward_token(current, w);
@@ -204,14 +248,15 @@ inline void skull_generate(const GenerateConfig& cfg) {
         int next;
         if (cfg.temperature > 0.0) {
             softmax_temp(logits, cfg.temperature);
+            filter_probs(logits, cfg.top_k, cfg.top_p);
             next = sample(logits, rng);
         } else {
             next = argmax(logits);
         }
 
-        if (w.has_bpe) print_safe(w.bpe.vocab[(size_t)next]);
-        else           print_safe(std::string(1, (char)next));
-        std::cout.flush();
+        if (w.has_bpe) print_safe(w.bpe.vocab[(size_t)next], out);
+        else           print_safe(std::string(1, (char)next), out);
+        out.flush();
 
         current = next;
         if (tf) {
@@ -228,5 +273,5 @@ inline void skull_generate(const GenerateConfig& cfg) {
         }
     }
 
-    std::cout << "\n--- Ende ---\n\n";
+    out << "\n--- Ende ---\n\n";
 }

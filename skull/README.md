@@ -192,6 +192,18 @@ generate MeinModell {
     temperature = 0.8                      // Kreativität; 0 = immer das wahrscheinlichste Token
 }
 ```
+Weitere Felder von `generate`:
+
+| Feld | Standard | Bedeutung |
+|------|----------|-----------|
+| `seed` | zufällig | Mit Seed ist die Ausgabe reproduzierbar (auf jedem System gleich) |
+| `top_k` | 0 | Nur die k wahrscheinlichsten Token zulassen (0 = aus) |
+| `top_p` | 1 | Nur die kleinste Menge wahrscheinlichster Token zulassen, deren Wahrscheinlichkeiten sich zu `top_p` summieren (1 = aus) |
+
+`top_k`/`top_p` wirken nur bei `temperature > 0`. Sie halten das Modell davon ab, seltene, meist
+unsinnige Token zu würfeln, ohne es wie `temperature = 0` komplett festzunageln (`top_k = 1` ist
+identisch zu greedy).
+
 Beim Transformer gibt es `shift`: Standardmäßig (`false`) sieht das Modell immer exakt die letzten
 `context` Token. Das Generieren nutzt dabei einen KV-Cache, solange der Kontext noch nicht voll ist;
 danach muss jedes Token neu gerechnet werden. Mit `shift = true` wird bei vollem Kontext nur die
@@ -220,11 +232,29 @@ beim Generieren immer die letzten `context` Token.
 | `dim`, `vocab` | 64, 256 | Auch im `define model` setzbar |
 | `val` | 0.1 | Anteil der Daten (vom **Dateiende**), der nicht trainiert, sondern zum Bewerten benutzt wird; 0 = aus. Höchstens 50 000 Token; bei zu wenig Daten (< 100 Token) wird übersprungen, mit Hinweis |
 | `threads` | 0 | Nur Transformer: Anzahl Rechen-Threads (0 = alle Kerne). Parallel laufen die Sequenzen eines Batches (`batch > 1`) und die Validierung. **Das Ergebnis ist bitgleich, egal wie viele Threads rechnen.** |
+| `seed` | 42 | Zufallsstart für Startgewichte und die Reihenfolge der Trainingsfenster. Gleicher Seed + gleiche Daten = **gleiche Gewichte**, auf jedem System |
+| `checkpoint` | 0 | Alle N Epochen den kompletten Trainingszustand nach `<out>.ckpt` schreiben (0 = aus) |
+| `stop_after` | 0 | Nach dieser Epoche **pausieren** und einen Checkpoint schreiben (0 = bis `epochs`) |
+| `resume` | – | Pfad eines Checkpoints: Training dort **fortsetzen** |
 | `patience` | 0 | Early Stopping: Abbruch, wenn sich der Validierungs-Loss N Epochen nicht verbessert (0 = aus) |
 | `context` | 1 | 1 = Bigram, > 1 = Transformer mit diesem Kontext (max. 8192) |
 | `heads`, `layers` | 2, 1 | Nur Transformer. `dim` muss durch `heads` teilbar sein |
 | `bpe`, `bpe_vocab` | false, 1000 | Byte-Pair-Encoding statt Bytes als Token. Der Tokenizer wird in der Gewichte-Datei mitgespeichert, `generate` benutzt ihn automatisch |
 | `gpu`, `prefer_amd` | false | Zeigt das OpenCL-Gerät an. **Das Training läuft trotzdem auf der CPU** (Hinweis wird ausgegeben) |
+
+### Pausieren und Fortsetzen
+```skull
+// 1. Lauf: nach Epoche 20 anhalten (z. B. um zu schauen, ob das Training gut aussieht)
+train Mini { data = "text.txt"  out = "mini.weights"  epochs = 100  stop_after = 20 }
+
+// später: dort weitermachen, bis Epoche 100
+train Mini { data = "text.txt"  out = "mini.weights"  epochs = 100  resume = "mini.weights.ckpt" }
+```
+Ein Checkpoint enthält den **ganzen** Trainingszustand (Gewichte, Adam-Momente, Zufallsgenerator,
+Stelle im Lernraten-Plan, bisher bestes Modell). Pausieren und Fortsetzen ergibt deshalb **exakt
+dieselben Gewichte** wie ein durchgehender Lauf. Skull prüft beim Fortsetzen, ob Modellart, Größe
+und Daten (inkl. `val`/`bpe`) zum Checkpoint passen, und lehnt sonst mit einer Meldung ab. Wer
+`epochs` gegenüber dem ersten Lauf ändert, ändert damit auch den Lernraten-Plan.
 
 ### Validierung: lernt das Modell wirklich?
 Der Trainings-Loss sinkt fast immer, auch wenn das Modell nur auswendig lernt. Deshalb hält Skull

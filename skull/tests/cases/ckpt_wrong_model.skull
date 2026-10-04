@@ -1,0 +1,5 @@
+// Checkpoint eines Transformers kann kein Bigram-Training fortsetzen
+define model T { dim = 8  context = 8  heads = 2 }
+train T { data = "data/late.txt"  out = "data/ckpt_w.weights"  epochs = 3  rate = 0.005  stop_after = 1 }
+define model B { dim = 8 }
+train B { data = "data/late.txt"  out = "data/ckpt_w2.weights"  epochs = 3  resume = "data/ckpt_w.weights.ckpt" }

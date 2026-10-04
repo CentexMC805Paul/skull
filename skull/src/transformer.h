@@ -665,6 +665,12 @@ public:
         });
     }
 
+    // Zustand fuer Checkpoints
+    const std::vector<double>& moment1() const { return m_; }
+    const std::vector<double>& moment2() const { return v_; }
+    size_t steps() const { return t_; }
+    void restore(const std::vector<double>& m, const std::vector<double>& v, size_t t) { m_ = m; v_ = v; t_ = t; }
+
 private:
     std::vector<double> m_, v_;
     size_t t_ = 0;

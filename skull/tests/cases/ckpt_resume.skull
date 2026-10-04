@@ -1,0 +1,5 @@
+// Training pausieren und spaeter fortsetzen (Zustand inkl. Optimierer, Zufallsgenerator, Lernrate)
+define model M { dim = 16  context = 8  heads = 2 }
+train M { data = "data/late.txt"  out = "data/ckpt_a.weights"  epochs = 4  rate = 0.005  batch = 2  stop_after = 2 }
+train M { data = "data/late.txt"  out = "data/ckpt_a.weights"  epochs = 4  rate = 0.005  batch = 2  resume = "data/ckpt_a.weights.ckpt" }
+print("EPOCHEN GESAMT:", last_best_epoch() >= 1)
