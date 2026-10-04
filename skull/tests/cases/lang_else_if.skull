@@ -1,0 +1,12 @@
+define func klasse(x) {
+    if x < 0 {
+        return "negativ"
+    } else if x == 0 {
+        return "null"
+    } else if x < 10 {
+        return "klein"
+    } else {
+        return "gross"
+    }
+}
+print("KLASSE:", klasse(-5), klasse(0), klasse(7), klasse(99))

@@ -1,0 +1,8 @@
+// and / or / not (und !) mit Kurzschluss-Auswertung
+print("LOGIK:", true and false, true or false, not true, !false, 1 < 2 and 2 < 3, not 1 > 2)
+if false and (1 / 0 == 1) { print("nie") } else { print("KURZ1 ok") }
+if true or (1 / 0 == 1) { print("KURZ2 ok") }
+// and bindet staerker als or
+print("RANG:", true or false and false, (true or false) and false)
+// != darf durch das neue ! nicht kaputtgehen
+print("NE:", 1 != 2, 1 != 1)

@@ -3,8 +3,7 @@
 #include <vector>
 
 // ============================================================
-//  SKULL LEXER  v0.5.0
-//  Neu: KW_GENERATE
+//  SKULL LEXER
 // ============================================================
 
 enum class TokenKind {
@@ -15,9 +14,10 @@ enum class TokenKind {
     KW_FUNC, KW_RETURN,
     KW_IF, KW_ELSE, KW_FOR, KW_IN, KW_WHILE,
     KW_TRUE, KW_FALSE,
+    KW_AND, KW_OR, KW_NOT,          // and, or, not  (und '!')
 
     // Operatoren
-    EQUALS, PLUS, MINUS, STAR, SLASH,
+    EQUALS, PLUS, MINUS, STAR, SLASH, PERCENT,
     LESS, GREATER, LESS_EQ, GREATER_EQ, EQ_EQ, NOT_EQ,
     DOTDOT,
 
@@ -48,11 +48,15 @@ inline std::string token_kind_name(TokenKind k) {
         case TokenKind::KW_WHILE:     return "while";
         case TokenKind::KW_TRUE:      return "true";
         case TokenKind::KW_FALSE:     return "false";
+        case TokenKind::KW_AND:       return "and";
+        case TokenKind::KW_OR:        return "or";
+        case TokenKind::KW_NOT:       return "not";
         case TokenKind::EQUALS:       return "=";
         case TokenKind::PLUS:         return "+";
         case TokenKind::MINUS:        return "-";
         case TokenKind::STAR:         return "*";
         case TokenKind::SLASH:        return "/";
+        case TokenKind::PERCENT:      return "%";
         case TokenKind::LESS:         return "<";
         case TokenKind::GREATER:      return ">";
         case TokenKind::LESS_EQ:      return "<=";
@@ -152,6 +156,9 @@ private:
         if (id == "while")    return { TokenKind::KW_WHILE,    id, sl, sc };
         if (id == "true")     return { TokenKind::KW_TRUE,     id, sl, sc };
         if (id == "false")    return { TokenKind::KW_FALSE,    id, sl, sc };
+        if (id == "and")      return { TokenKind::KW_AND,      id, sl, sc };
+        if (id == "or")       return { TokenKind::KW_OR,       id, sl, sc };
+        if (id == "not")      return { TokenKind::KW_NOT,      id, sl, sc };
         return { TokenKind::IDENTIFIER, id, sl, sc };
     }
 
@@ -205,6 +212,8 @@ public:
             case '-': return { TokenKind::MINUS,     "-",  sl, sc };
             case '*': return { TokenKind::STAR,      "*",  sl, sc };
             case '/': return { TokenKind::SLASH,     "/",  sl, sc };
+            case '%': return { TokenKind::PERCENT,   "%",  sl, sc };
+            case '!': return { TokenKind::KW_NOT,    "!",  sl, sc };   // '!=' wurde oben schon erkannt
             case '<': return { TokenKind::LESS,      "<",  sl, sc };
             case '>': return { TokenKind::GREATER,   ">",  sl, sc };
             case '{': return { TokenKind::L_BRACE,   "{",  sl, sc };

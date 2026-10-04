@@ -6,8 +6,7 @@
 #include "lexer.h"
 
 // ============================================================
-//  SKULL AST  v0.5.0
-//  Neu: GenerateStmt fuer Textgenerierung
+//  SKULL AST
 // ============================================================
 
 struct Node {
@@ -41,6 +40,12 @@ struct BinaryExpr : ExprNode {
     BinaryExpr(std::string o, std::unique_ptr<ExprNode> l,
                std::unique_ptr<ExprNode> r, int ln, int c)
         : op(std::move(o)), left(std::move(l)), right(std::move(r)) { line=ln; col=c; }
+};
+struct UnaryExpr : ExprNode {
+    std::string op;                       // "not"
+    std::unique_ptr<ExprNode> operand;
+    UnaryExpr(std::string o, std::unique_ptr<ExprNode> e, int l, int c)
+        : op(std::move(o)), operand(std::move(e)) { line=l; col=c; }
 };
 struct CallExpr : ExprNode {
     std::string name;

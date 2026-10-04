@@ -4,12 +4,13 @@
 ```skull
 define x = 42
 define func name(args) { return args + 1 }
-if x > 10 { print("gross") } else { print("klein") }
+if x > 10 { print("gross") } else if x > 5 { print("mittel") } else { print("klein") }
+if x % 2 == 0 and not (x > 100) { print("gerade") }
 for i in 1..100 { print(i) }
 while x > 0 { x = x - 1 }
 ```
-Rekursion bis 1000 Ebenen, typsichere Vergleiche, Fehlermeldungen mit Zeilennummer.
-Fehlt: `else if`, `and`/`or`/`!`, `%`, Listen.
+Rekursion bis 1000 Ebenen, typsichere Vergleiche, `and`/`or`/`not` mit Kurzschluss, `%`,
+Fehlermeldungen mit Zeilennummer. Fehlt: Listen.
 
 ## Tensoren & KI-Mathematik (AVX2, Autograd)
 ```skull
@@ -42,7 +43,7 @@ generate MeinLLM {
 ```
 
 ## Tests
-`./build.sh --test` (oder `ctest` im Build-Verzeichnis): 32 Tests, darunter Regressionstests für
+`./build.sh --test` (oder `ctest` im Build-Verzeichnis): 36 Tests, darunter Regressionstests für
 Speicherleck, Autograd, Trainingsdaten-Limit und Generator-Randfälle. CI läuft auf Linux (gcc, clang,
 Sanitizer), macOS und Windows.
 
@@ -69,6 +70,6 @@ skull/tests/        — ctest-Fälle
 ## Nächste Schritte (Priorität)
 1. Modell mit Kontext > 1 Token: erst eine Schicht Attention mit Gradiententest, dann Transformer
    (Ansatzpunkt: `experimental/layers.h`, siehe dort).
-2. Sprache: `else if`, `and`/`or`/`!`, `%`.
+2. Sprache: Listen, Strings indizieren.
 3. GPU-Rechnen: die OpenCL-Kernel in `gpu.h` an den Trainer anbinden und gegen die CPU-Version testen.
 4. Gewichte-Format versionieren, bevor weitere Schichten dazukommen.

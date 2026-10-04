@@ -7,8 +7,10 @@
 #include "ast.h"
 
 // ============================================================
-//  SKULL PARSER  v0.5.0
-//  Neu: generate-Statement
+//  SKULL PARSER
+//
+//  Rangfolge der Operatoren (niedrig -> hoch):
+//    or  <  and  <  not  <  Vergleiche  <  + -  <  * / %  <  Minus-Zeichen/Klammern
 // ============================================================
 
 class Parser {
@@ -92,7 +94,7 @@ private:
 
     std::unique_ptr<ExprNode> parse_term() {
         auto node = parse_factor(); if (!node) return nullptr;
-        while (check(TokenKind::STAR) || check(TokenKind::SLASH)) {
+        while (check(TokenKind::STAR) || check(TokenKind::SLASH) || check(TokenKind::PERCENT)) {
             Token op = advance(); auto right = parse_factor();
             if (!right) throw std::runtime_error("Ausdruck erwartet!");
             node = std::make_unique<BinaryExpr>(op.value, std::move(node),
@@ -125,7 +127,37 @@ private:
         return node;
     }
 
-    std::unique_ptr<ExprNode> parse_expr() { return parse_comparison(); }
+    // not hat niedrigere Prioritaet als Vergleiche: "not x > 3" ist "not (x > 3)"
+    std::unique_ptr<ExprNode> parse_not() {
+        if (check(TokenKind::KW_NOT)) {
+            Token op = advance();
+            auto operand = parse_not();
+            return std::make_unique<UnaryExpr>("not", std::move(operand), op.line, op.col);
+        }
+        return parse_comparison();
+    }
+
+    std::unique_ptr<ExprNode> parse_and() {
+        auto node = parse_not();
+        while (check(TokenKind::KW_AND)) {
+            Token op = advance();
+            auto right = parse_not();
+            node = std::make_unique<BinaryExpr>("and", std::move(node), std::move(right), op.line, op.col);
+        }
+        return node;
+    }
+
+    std::unique_ptr<ExprNode> parse_or() {
+        auto node = parse_and();
+        while (check(TokenKind::KW_OR)) {
+            Token op = advance();
+            auto right = parse_and();
+            node = std::make_unique<BinaryExpr>("or", std::move(node), std::move(right), op.line, op.col);
+        }
+        return node;
+    }
+
+    std::unique_ptr<ExprNode> parse_expr() { return parse_or(); }
 
     // ---- Bloecke ----
     std::vector<std::unique_ptr<StmtNode>> parse_block() {
@@ -214,7 +246,13 @@ private:
         auto cond = parse_expr();
         auto then_body = parse_block();
         std::vector<std::unique_ptr<StmtNode>> else_body;
-        if (check(TokenKind::KW_ELSE)) { advance(); else_body = parse_block(); }
+        if (check(TokenKind::KW_ELSE)) {
+            advance();
+            if (check(TokenKind::KW_IF))                 // else if ...
+                else_body.push_back(parse_if());
+            else
+                else_body = parse_block();
+        }
         return std::make_unique<IfStmt>(std::move(cond), std::move(then_body),
                                         std::move(else_body), tok.line, tok.col);
     }

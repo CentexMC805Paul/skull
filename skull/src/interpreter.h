@@ -200,12 +200,20 @@ private:
         if (auto* n = dynamic_cast<const StringExpr*>(node)) return SkullValue(n->value);
         if (auto* n = dynamic_cast<const BoolExpr*>(node))   return SkullValue(n->value);
         if (auto* n = dynamic_cast<const IdentExpr*>(node))  return env->get(n->name, n->line);
+        if (auto* n = dynamic_cast<const UnaryExpr*>(node))  return SkullValue(!eval_expr(n->operand.get(), env).is_truthy());
         if (auto* n = dynamic_cast<const BinaryExpr*>(node)) return eval_binary(n, env);
         if (auto* n = dynamic_cast<const CallExpr*>(node))   return eval_call(n, env);
         throw std::runtime_error("Unbekannter Ausdruck");
     }
 
     SkullValue eval_binary(const BinaryExpr* n, std::shared_ptr<Environment> env) {
+        // and / or: Kurzschluss-Auswertung (rechte Seite nur wenn noetig); Ergebnis ist true/false
+        if (n->op == "and" || n->op == "or") {
+            bool l = eval_expr(n->left.get(), env).is_truthy();
+            if (n->op == "and" && !l) return SkullValue(false);
+            if (n->op == "or"  && l)  return SkullValue(true);
+            return SkullValue(eval_expr(n->right.get(), env).is_truthy());
+        }
         SkullValue lv = eval_expr(n->left.get(), env);
         SkullValue rv = eval_expr(n->right.get(), env);
         const std::string& op = n->op;
@@ -231,6 +239,13 @@ private:
         if (op == "/") {
             if (r == 0.0) throw std::runtime_error("Zeile " + std::to_string(n->line) + ": Division durch 0");
             return SkullValue(l / r);
+        }
+        if (op == "%") {
+            // wie in Python: Ergebnis hat das Vorzeichen des Divisors (-7 % 3 == 2)
+            if (r == 0.0) throw std::runtime_error("Zeile " + std::to_string(n->line) + ": Modulo durch 0");
+            double m = std::fmod(l, r);
+            if (m != 0.0 && ((m < 0.0) != (r < 0.0))) m += r;
+            return SkullValue(m);
         }
         if (op == "<")  return SkullValue(l < r);
         if (op == ">")  return SkullValue(l > r);

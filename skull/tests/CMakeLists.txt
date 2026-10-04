@@ -55,6 +55,10 @@ skull_case(lang_equality            cases/lang_equality.skull            MATCH "
 skull_case(lang_unknown_field       cases/lang_unknown_field.skull       MATCH "Unbekanntes Feld 'epoch'")
 skull_case(lang_unsupported_field   cases/lang_unsupported_field.skull   MATCH "'layers' in model M wird noch nicht unterstuetzt")
 skull_case(lang_type_error          cases/lang_type_error.skull          EXIT 1 MATCH "Zeile 3: Text .* erwartet")
+skull_case(lang_else_if             cases/lang_else_if.skull             MATCH "KLASSE: negativ null klein gross")
+skull_case(lang_logic               cases/lang_logic.skull               MATCH "LOGIK: false true false true true true.*KURZ1 ok.*KURZ2 ok.*RANG: true false.*NE: true false")
+skull_case(lang_modulo              cases/lang_modulo.skull              MATCH "MOD: 1 2 -2 0 1.5.*DREI: 5")
+skull_case(lang_modulo_zero         cases/lang_modulo_zero.skull         EXIT 1 MATCH "Zeile 1: Modulo durch 0")
 
 # ---- Autograd / Speicher ----
 skull_case(autograd_diamond         cases/autograd_diamond.skull         MATCH "GRAD OK" NO_MATCH "GRAD FALSCH")

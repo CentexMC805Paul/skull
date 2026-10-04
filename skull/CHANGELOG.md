@@ -46,7 +46,9 @@ size as before; most of the "v1.0.0" feature list below was announced but never 
 
 ### ➕ Added
 
-- Regression tests (`ctest`, 32 cases) for all of the above, run by GitHub Actions on Linux
+- Language: `else if`, `and` / `or` / `not` (also `!`) with short-circuit evaluation, and `%`
+  (Python semantics: the result takes the sign of the divisor).
+- Regression tests (`ctest`, 36 cases) for all of the above, run by GitHub Actions on Linux
   (gcc, clang, AddressSanitizer/UBSan), macOS and Windows. Run locally with `./build.sh --test`.
 - Builtin `live_tensors()` (number of live tensors; used by the leak test).
 - `-DSKULL_SANITIZE=ON` build option.

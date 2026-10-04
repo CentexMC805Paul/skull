@@ -116,15 +116,25 @@ for i in 1..5 {
     print(i)
 }
 
-// Bedingung
+// Bedingung, auch mit else if
 if x > 10 {
     print("x ist groß")
+} else if x > 5 {
+    print("x ist mittel")
 } else {
     print("x ist klein")
 }
+
+// Logik und Rest
+if x % 2 == 0 and not (x > 100) {
+    print("gerade und höchstens 100")
+}
 ```
-Vergleiche: `==  !=  <  >  <=  >=`. `==` vergleicht mit Typ (`1 == "1"` ist `false`).
-Es gibt (noch) kein `else if`, kein `and`/`or`/`!` und kein `%`.
+- Vergleiche: `==  !=  <  >  <=  >=`. `==` vergleicht mit Typ (`1 == "1"` ist `false`).
+- Logik: `and`, `or`, `not` (auch `!`). Rangfolge: `or` < `and` < `not` < Vergleiche. `and`/`or`
+  werten die rechte Seite nur aus, wenn nötig, und liefern `true`/`false`.
+- Rechnen: `+  -  *  /  %`. `%` wie in Python (`-7 % 3` ist `2`).
+- Es gibt (noch) keine Listen.
 
 ### 4. KI-Modell trainieren
 ```skull
