@@ -1,0 +1,4 @@
+// langes Generieren ueber den Kontext hinaus (exakter Modus: Cache nur bis der Kontext voll ist)
+define model M { dim = 16  context = 8  heads = 2 }
+train M { data = "data/repeat.txt"  out = "data/long.weights"  epochs = 40  rate = 0.01  batch = 2 }
+generate M { weights = "data/long.weights"  prompt = "das"  tokens = 200  temperature = 0 }

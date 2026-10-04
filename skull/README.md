@@ -192,6 +192,13 @@ generate MeinModell {
     temperature = 0.8                      // Kreativität; 0 = immer das wahrscheinlichste Token
 }
 ```
+Beim Transformer gibt es `shift`: Standardmäßig (`false`) sieht das Modell immer exakt die letzten
+`context` Token. Das Generieren nutzt dabei einen KV-Cache, solange der Kontext noch nicht voll ist;
+danach muss jedes Token neu gerechnet werden. Mit `shift = true` wird bei vollem Kontext nur die
+jüngere Hälfte behalten und neu aufgebaut. Jedes Token bleibt dann billig (gemessen: 300 Token mit
+Kontext 64 in 0,04 s statt 0,83 s, also 20× schneller), das Modell sieht dafür zeitweise nur
+`context/2` bis `context` Token.
+
 Maßgeblich sind Modellart, Größe und Tokenizer aus der Gewichte-Datei; passt `dim`, `context`,
 `heads` oder `layers` im `define model` nicht dazu, warnt Skull. Beim Transformer sieht das Modell
 beim Generieren immer die letzten `context` Token.

@@ -76,6 +76,12 @@ Measured on Tiny Shakespeare (1.1 MB), dim 64, 2 layers, 4 heads, context 64, ba
 
 ### ➕ Added
 
+- **KV cache for generation** (`Transformer::prefill()` / `step()`): a new token only computes its own
+  row. The logits are bit-identical to a full forward pass (`tests/gradcheck.cpp`). Default mode is
+  exact (output unchanged; the cache helps until the context is full, after that every token needs a
+  full recompute because positions are absolute). `generate { shift = true }` keeps only the younger
+  half when the context is full: 300 tokens at context 64 take 0.04 s instead of 0.83 s (20x), at the
+  price of sometimes seeing only `context/2` to `context` tokens.
 - **Validation.** `train` holds back the last 10 % of the data (`val`, at most 50 000 tokens) and
   reports validation loss and perplexity every epoch. The weights with the best validation loss are
   saved (not the last epoch's), `patience = N` stops after N epochs without improvement. Skipped with a

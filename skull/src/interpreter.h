@@ -440,7 +440,7 @@ private:
             for (const auto& f : n->fields) names.push_back({f.name, f.line});
             warn_fields("generate", n->model_name, names,
                         {"weights", "prompt", "tokens", "temperature", "dim", "vocab",
-                         "context", "heads", "layers"}, {});
+                         "context", "heads", "layers", "shift"}, {});
             for (const auto& f : n->fields) {
                 SkullValue val = eval_expr(f.value.get(), env);
                 if (f.name == "weights")     cfg.weights_path = val.as_string(f.line);
@@ -452,6 +452,7 @@ private:
                 if (f.name == "context")     cfg.context      = to_size(val, f.line, "context");
                 if (f.name == "heads")       cfg.heads        = to_size(val, f.line, "heads");
                 if (f.name == "layers")      cfg.layers       = to_size(val, f.line, "layers");
+                if (f.name == "shift")       cfg.shift        = val.is_truthy();
             }
             try {
                 skull_generate(cfg);

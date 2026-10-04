@@ -146,3 +146,5 @@ skull_case(val_tiny_data            cases/val_tiny_data.skull            MATCH "
 skull_case(val_transformer          cases/val_transformer.skull          MATCH "Modell:   Transformer.*Val: .*VAL: true")
 skull_case(val_patience_without_val cases/val_patience_without_val.skull MATCH "'patience' wirkt nur mit Validierung")
 skull_case(val_last_loss_before_train cases/val_last_loss_before_train.skull EXIT 1 MATCH "last_loss\\(\\): es lief noch kein train")
+skull_case(gen_shift                cases/gen_shift.skull                MATCH "Transformer.*--- Ende ---")
+skull_case(gen_long_transformer     cases/gen_long_transformer.skull     MATCH "Transformer.*--- Ende ---")

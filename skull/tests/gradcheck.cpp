@@ -186,6 +186,47 @@ static void check_thread_safety() {
     expect(same, "24 Sequenzen auf 8 Threads: Loss und Gradienten bitgleich zur sequentiellen Rechnung");
 }
 
+// KV-Cache: step() Token fuer Token == forward() auf der ganzen Folge; prefill() ebenfalls
+static void check_kv_cache() {
+    std::printf("KV-Cache (inkrementelles Generieren)\n");
+    TransformerConfig c; c.vocab = 11; c.dim = 12; c.context = 8; c.heads = 3; c.layers = 3;
+    Transformer m = make_model(c, 17);
+    std::vector<int> ids, tgt;
+    make_data(c, 3, c.context, ids, tgt);
+    const size_t T = c.context, V = c.vocab;
+
+    Transformer::Workspace ws;
+    const std::vector<double> full = m.forward(ids.data(), T, ws);   // Kopie
+
+    Transformer::KVCache kv;
+    m.cache_reset(kv);
+    double worst = 0.0;
+    for (size_t p = 0; p < T; ++p) {
+        const std::vector<double> lg = m.step(ids[p], kv);
+        for (size_t j = 0; j < V; ++j) worst = std::max(worst, std::fabs(lg[j] - full[p * V + j]));
+    }
+    std::printf("  groesste Abweichung step() gegen forward(): %.3g\n", worst);
+    expect(worst < 1e-12, "step() Token fuer Token liefert dieselben Logits wie forward() auf der ganzen Folge");
+    expect(kv.len == T, "Cache enthaelt alle Positionen");
+
+    // prefill einer Teilfolge + weitere Schritte == forward auf der ganzen Folge
+    const size_t n0 = 5;
+    Transformer::KVCache kv2;
+    Transformer::Workspace ws2;
+    std::vector<double> lg = m.prefill(ids.data(), n0, kv2, ws2);
+    double w2 = 0.0;
+    for (size_t j = 0; j < V; ++j) w2 = std::max(w2, std::fabs(lg[j] - full[(n0 - 1) * V + j]));
+    for (size_t p = n0; p < T; ++p) {
+        lg = m.step(ids[p], kv2);
+        for (size_t j = 0; j < V; ++j) w2 = std::max(w2, std::fabs(lg[j] - full[p * V + j]));
+    }
+    expect(w2 < 1e-12, "prefill(5 Token) + step() == forward() auf der ganzen Folge");
+
+    bool full_throws = false;
+    try { m.step(0, kv); } catch (const std::runtime_error&) { full_throws = true; }
+    expect(full_throws, "step() bei vollem Cache wird abgelehnt");
+}
+
 int main() {
     TransformerConfig a; a.vocab = 7; a.dim = 8;  a.context = 5; a.heads = 2; a.layers = 2;
     check_gradients(a, 5, "2 Schichten, 2 Koepfe, volle Laenge");
@@ -202,6 +243,7 @@ int main() {
     check_init_loss_and_overfit(d);
     check_validation();
     check_thread_safety();
+    check_kv_cache();
 
     if (failures) { std::printf("\n%d Pruefung(en) fehlgeschlagen\n", failures); return 1; }
     std::printf("\nAlle Pruefungen bestanden\n");

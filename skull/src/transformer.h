@@ -153,6 +153,27 @@ public:
         return l;
     }
 
+    // ---- Inkrementelles Generieren (KV-Cache) ----
+    // Speichert pro Schicht die Keys und Values aller bisherigen Positionen, damit ein neues Token
+    // nur noch seine eigene Zeile rechnen muss statt den ganzen Kontext (O(Laenge) statt
+    // O(Laenge^2) pro Token). Die Logits stimmen mit denen von forward() fuer dieselbe
+    // Token-Folge ueberein (siehe tests/gradcheck.cpp). Positionen sind absolut (0..context-1):
+    // ist der Cache voll, muss mit prefill() neu aufgebaut werden.
+    struct KVCache {
+        std::vector<std::vector<double>> k, v;   // [Schicht][Position * dim + i]
+        size_t len = 0;                          // Anzahl gespeicherter Positionen
+    };
+    void cache_reset(KVCache& c) const {
+        c.k.assign(cfg.layers, std::vector<double>(cfg.context * cfg.dim, 0.0));
+        c.v.assign(cfg.layers, std::vector<double>(cfg.context * cfg.dim, 0.0));
+        c.len = 0;
+    }
+    // Rechnet ids[0..n) (n <= context) komplett, fuellt den Cache neu und liefert die Logits der
+    // letzten Position.
+    std::vector<double> prefill(const int* ids, size_t n, KVCache& c, Workspace& ws) const;
+    // Haengt ein Token an (c.len < context) und liefert die Logits dieser Position.
+    std::vector<double> step(int token, KVCache& c) const;
+
     // Wie step_loss_and_grad, aber mit explizitem Workspace und Gradientenpuffer (thread-tauglich).
     double step_loss_and_grad(const int* ids, const int* targets, size_t t, Workspace& ws, double* g) const {
         forward(ids, t, ws);
@@ -503,6 +524,76 @@ inline void Transformer::backward(const int* ids, size_t t, Workspace& ws, doubl
         double* gp = (g + off_pos + i * d);
         for (size_t j = 0; j < d; ++j) { gt[j] += dx[i * d + j]; gp[j] += dx[i * d + j]; }
     }
+}
+
+inline std::vector<double> Transformer::prefill(const int* ids, size_t n, KVCache& c, Workspace& ws) const {
+    const size_t d = cfg.dim, V = cfg.vocab;
+    forward(ids, n, ws);
+    cache_reset(c);
+    for (size_t l = 0; l < cfg.layers; ++l) {
+        std::copy(ws.layers[l].k.begin(), ws.layers[l].k.begin() + (std::ptrdiff_t)(n * d), c.k[l].begin());
+        std::copy(ws.layers[l].v.begin(), ws.layers[l].v.begin() + (std::ptrdiff_t)(n * d), c.v[l].begin());
+    }
+    c.len = n;
+    return std::vector<double>(ws.logits.begin() + (std::ptrdiff_t)((n - 1) * V), ws.logits.begin() + (std::ptrdiff_t)(n * V));
+}
+
+inline std::vector<double> Transformer::step(int token, KVCache& c) const {
+    const size_t d = cfg.dim, f = cfg.ff(), H = cfg.heads, dh = cfg.head_dim(), V = cfg.vocab;
+    const size_t p = c.len;
+    if (p >= cfg.context)
+        throw std::runtime_error("transformer: KV-Cache voll (Kontext " + std::to_string(cfg.context) + ")");
+    if (token < 0 || (size_t)token >= V)
+        throw std::runtime_error("transformer: Token-ID " + std::to_string(token) + " ausserhalb des Vokabulars");
+    const double scale = 1.0 / std::sqrt((double)dh);
+
+    std::vector<double> x(d), xn(d), ln(d), q(d), k(d), v(d), ctx(d), tmp(d), hpre(f), hact(f), th(f), scores(p + 1);
+    double mean = 0.0, rstd = 0.0;
+    const double* te = &params[off_tok + (size_t)token * d];
+    const double* pe = &params[off_pos + p * d];
+    for (size_t j = 0; j < d; ++j) x[j] = te[j] + pe[j];
+
+    for (size_t l = 0; l < cfg.layers; ++l) {
+        const LayerOff& o = L[l];
+        layernorm(x.data(), &params[o.ln1g], &params[o.ln1b], xn.data(), ln.data(), &mean, &rstd, 1, d);
+        linear(ln.data(), &params[o.wq], nullptr, q.data(), 1, d, d);
+        linear(ln.data(), &params[o.wk], nullptr, k.data(), 1, d, d);
+        linear(ln.data(), &params[o.wv], nullptr, v.data(), 1, d, d);
+        std::copy(k.begin(), k.end(), c.k[l].begin() + (std::ptrdiff_t)(p * d));
+        std::copy(v.begin(), v.end(), c.v[l].begin() + (std::ptrdiff_t)(p * d));
+
+        std::fill(ctx.begin(), ctx.end(), 0.0);
+        for (size_t h = 0; h < H; ++h) {
+            const double* qh = &q[h * dh];
+            double maxv = -1e300;
+            for (size_t j = 0; j <= p; ++j) {
+                scores[j] = dot(qh, &c.k[l][j * d + h * dh], dh) * scale;
+                maxv = std::max(maxv, scores[j]);
+            }
+            double sum = 0.0;
+            for (size_t j = 0; j <= p; ++j) { scores[j] = std::exp(scores[j] - maxv); sum += scores[j]; }
+            for (size_t j = 0; j <= p; ++j) scores[j] /= sum;
+            double* out = &ctx[h * dh];
+            for (size_t j = 0; j <= p; ++j) {
+                const double* vj = &c.v[l][j * d + h * dh];
+                for (size_t e = 0; e < dh; ++e) out[e] += scores[j] * vj[e];
+            }
+        }
+        linear(ctx.data(), &params[o.wo], nullptr, tmp.data(), 1, d, d);
+        for (size_t j = 0; j < d; ++j) x[j] += tmp[j];                       // x_mid
+
+        layernorm(x.data(), &params[o.ln2g], &params[o.ln2b], xn.data(), ln.data(), &mean, &rstd, 1, d);
+        linear(ln.data(), &params[o.w1], &params[o.b1], hpre.data(), 1, d, f);
+        for (size_t j = 0; j < f; ++j) hact[j] = gelu(hpre[j], th[j]);
+        linear(hact.data(), &params[o.w2], &params[o.b2], tmp.data(), 1, f, d);
+        for (size_t j = 0; j < d; ++j) x[j] += tmp[j];
+    }
+
+    layernorm(x.data(), &params[off_lnfg], &params[off_lnfb], xn.data(), ln.data(), &mean, &rstd, 1, d);
+    std::vector<double> logits(V);
+    linear(ln.data(), &params[off_out], nullptr, logits.data(), 1, d, V);
+    c.len = p + 1;
+    return logits;
 }
 
 // ============================================================

@@ -43,6 +43,11 @@ struct GenerateConfig {
     size_t      context      = 0;
     size_t      heads        = 0;
     size_t      layers       = 0;
+    // Nur Transformer: false (Standard) = exakt, das Modell sieht immer die letzten `context` Token
+    // (Cache nur, solange der Kontext noch nicht voll ist; danach wird jedes Token neu gerechnet).
+    // true = ist der Kontext voll, wird nur die juengere Haelfte behalten und neu aufgebaut; dadurch
+    // bleibt jedes Token billig, das Modell sieht aber zeitweise nur context/2 bis context Token.
+    bool        shift        = false;
 };
 
 // Softmax mit Temperature (temperature muss > 0 sein)
@@ -172,14 +177,21 @@ inline void skull_generate(const GenerateConfig& cfg) {
 
     std::mt19937 rng(std::random_device{}());
 
-    // Transformer: Verlauf der Token + Modell
+    // Transformer: Verlauf der Token, Modell und KV-Cache (siehe transformer.h)
     std::unique_ptr<Transformer> tf;
     std::vector<int> history;
+    Transformer::KVCache kv;
+    Transformer::Workspace tws;
+    std::vector<double> tlogits;     // Logits fuer das naechste Token
+    const size_t ctx = w.tcfg.context;
     if (w.is_transformer) {
         tf = std::make_unique<Transformer>(w.tcfg);
         tf->params = w.tparams;
         history = prompt_ids;
         if (history.empty()) history.push_back(current);
+        tf->cache_reset(kv);
+        const size_t n0 = std::min(history.size(), ctx);     // die letzten `context` Token
+        tlogits = tf->prefill(&history[history.size() - n0], n0, kv, tws);
     }
 
     std::cout << "--- Ausgabe ---\n";
@@ -187,17 +199,7 @@ inline void skull_generate(const GenerateConfig& cfg) {
     std::cout.flush();
 
     for (int t = 0; t < cfg.tokens; ++t) {
-        FlatVec logits;
-        if (tf) {
-            // die letzten `context` Token sehen
-            const size_t ctx = w.tcfg.context;
-            const size_t n   = std::min(history.size(), ctx);
-            const std::vector<double>& all = tf->forward(&history[history.size() - n], n);
-            logits.assign(all.begin() + (std::ptrdiff_t)((n - 1) * w.vocab),
-                          all.begin() + (std::ptrdiff_t)(n * w.vocab));
-        } else {
-            logits = forward_token(current, w);
-        }
+        FlatVec logits = tf ? tlogits : forward_token(current, w);
 
         int next;
         if (cfg.temperature > 0.0) {
@@ -212,7 +214,18 @@ inline void skull_generate(const GenerateConfig& cfg) {
         std::cout.flush();
 
         current = next;
-        if (tf) history.push_back(next);
+        if (tf) {
+            history.push_back(next);
+            if (t + 1 < cfg.tokens) {            // Logits fuer den naechsten Schritt nur wenn noetig
+                if (kv.len < ctx) {
+                    tlogits = tf->step(next, kv);                    // inkrementell, nur die neue Zeile
+                } else {
+                    // Kontext voll: Positionen verschieben sich, also neu aufbauen
+                    const size_t n = cfg.shift ? std::max<size_t>(1, ctx / 2) : ctx;
+                    tlogits = tf->prefill(&history[history.size() - n], n, kv, tws);
+                }
+            }
+        }
     }
 
     std::cout << "\n--- Ende ---\n\n";
