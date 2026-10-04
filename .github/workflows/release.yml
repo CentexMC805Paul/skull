@@ -1,0 +1,166 @@
+name: Release
+
+# Baut fertige Pakete (Linux, macOS, Windows), testet sie und haengt sie bei einem Versions-Tag
+# (v1.0.0, v1.1.0, ...) an ein GitHub-Release.
+#
+#   - Tag v<version> pushen    -> Pakete bauen, testen, Release anlegen
+#   - "Run workflow" (manuell) -> Pakete bauen und testen, als Artefakte des Laufs ablegen (kein Release)
+#
+# Das Tag muss zur Version in skull/src/version.h passen, sonst bricht der Lauf ab.
+
+on:
+  push:
+    tags:
+      - 'v*'
+    # TEMPORAER: damit der Ablauf vor dem ersten Tag auf diesem Branch geprueft werden kann
+    # (baut und testet die Pakete, legt aber kein Release an). Nach dem Test entfernen.
+    branches:
+      - claude/great-curie-xmzmha
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: skull
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: ubuntu-22.04 (glibc 2.35) + vollstaendig statisch gelinkt -> laeuft auf jeder Distribution
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            cmake_args: -DSKULL_ENABLE_AVX2=ON -DSKULL_STATIC_RUNTIME=ON
+            archive: tar.gz
+          - name: linux-x86_64-compat
+            os: ubuntu-22.04
+            cmake_args: -DSKULL_ENABLE_AVX2=OFF -DSKULL_STATIC_RUNTIME=ON
+            archive: tar.gz
+          # macOS: Apple Silicon (Intel-Macs bauen aus dem Quelltext: ./build.sh)
+          - name: macos-arm64
+            os: macos-latest
+            cmake_args: ""
+            archive: tar.gz
+          # Windows: statische Laufzeit -> keine Visual-C++-Redistributable noetig
+          - name: windows-x86_64
+            os: windows-latest
+            cmake_args: -DSKULL_ENABLE_AVX2=ON -DSKULL_STATIC_RUNTIME=ON
+            archive: zip
+          - name: windows-x86_64-compat
+            os: windows-latest
+            cmake_args: -DSKULL_ENABLE_AVX2=OFF -DSKULL_STATIC_RUNTIME=ON
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version lesen
+        id: ver
+        shell: bash
+        run: |
+          version=$(sed -n 's/^#define SKULL_VERSION "\(.*\)"/\1/p' src/version.h)
+          test -n "$version" || { echo "Version nicht gefunden"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME passt nicht zur Version $version in src/version.h"
+            exit 1
+          fi
+
+      - name: Konfigurieren
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_args }}
+
+      - name: Bauen
+        shell: bash
+        run: cmake --build build --config Release -j2
+
+      - name: Tests
+        shell: bash
+        run: ctest --test-dir build --build-config Release --output-on-failure -j2
+
+      - name: Paket zusammenstellen
+        id: pack
+        shell: bash
+        run: |
+          pkg="skull-${{ steps.ver.outputs.version }}-${{ matrix.name }}"
+          rm -rf "dist/$pkg" && mkdir -p "dist/$pkg"
+          exe=skull; [ "${{ runner.os }}" = "Windows" ] && exe=skull.exe
+          cp "build/$exe" "dist/$pkg/"
+          cp -r examples "dist/$pkg/examples"
+          mkdir "dist/$pkg/docs"
+          cp docs/TUTORIAL.md "dist/$pkg/docs/"
+          cp README.md CHANGELOG.md LICENSE "dist/$pkg/"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            (cd dist && 7z a -tzip "$pkg.zip" "$pkg" > /dev/null)
+            echo "file=dist/$pkg.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar -C dist -czf "dist/$pkg.tar.gz" "$pkg"
+            echo "file=dist/$pkg.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
+
+      # Das Paket selbst auspacken und ausprobieren (nicht den Build-Ordner): so faellt ein vergessener
+      # Dateiname oder eine fehlende Bibliothek hier auf und nicht beim Nutzer.
+      - name: Paket auspacken und ausprobieren
+        shell: bash
+        run: |
+          rm -rf smoke && mkdir smoke
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            (cd smoke && 7z x "../${{ steps.pack.outputs.file }}" > /dev/null)
+          else
+            tar -C smoke -xzf "${{ steps.pack.outputs.file }}"
+          fi
+          cd "smoke/${{ steps.pack.outputs.pkg }}"
+          exe=./skull; [ "${{ runner.os }}" = "Windows" ] && exe=./skull.exe
+          "$exe" --version
+          "$exe" examples/hello.skull | tee hello.out
+          grep -q "quadrat(5) = 25" hello.out
+          "$exe" examples/transformer.skull | tee transformer.out
+          grep -q -- "--- Ende ---" transformer.out
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            # vollstaendig statisch: ldd muss das melden
+            ldd "$exe" 2>&1 | grep -qE "not a dynamic executable|statically linked"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.pkg }}
+          path: skull/${{ steps.pack.outputs.file }}
+          if-no-files-found: error
+
+  # Nur bei einem Versions-Tag: alle Pakete + Pruefsummen an ein GitHub-Release haengen
+  release:
+    name: GitHub-Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: pakete
+          merge-multiple: true
+      - name: Pruefsummen
+        run: |
+          cd pakete
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Release anlegen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" pakete/* \
+            --title "Skull ${GITHUB_REF_NAME#v}" \
+            --notes "Fertige Pakete fuer Linux, macOS und Windows. Entpacken und loslegen: docs/TUTORIAL.md im Paket. Pruefsummen: SHA256SUMS.txt. Aenderungen: skull/CHANGELOG.md." \
+            --generate-notes \
+            --verify-tag

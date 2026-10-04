@@ -3,6 +3,7 @@
 #include <sstream>
 #include <string>
 #include "version.h"
+#include "cpu.h"
 #include "stack.h"
 #include "lexer.h"
 #include "ast.h"
@@ -43,6 +44,11 @@ static int run_file(const char* path) {
 }
 
 int main(int argc, char* argv[]) {
+    // Als Erstes: laeuft dieses Programm ueberhaupt auf dieser CPU? (siehe cpu.h)
+    if (!skull_cpu_supported()) {
+        std::cerr << skull_cpu_help();
+        return 1;
+    }
     if (argc >= 2 && (std::string(argv[1]) == "--version" || std::string(argv[1]) == "-v")) {
         std::cout << "Skull v" SKULL_VERSION "\n";
         return 0;

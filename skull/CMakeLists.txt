@@ -18,6 +18,7 @@ option(SKULL_ENABLE_AVX2  "AVX2/FMA-Instruktionen verwenden (nur x86-64; fuer ae
 option(SKULL_SANITIZE     "AddressSanitizer + UBSan + Container-Assertions einschalten (gcc/clang)" OFF)
 option(SKULL_TSAN         "ThreadSanitizer einschalten: findet Datenrennen (gcc/clang, nicht zusammen mit SKULL_SANITIZE)" OFF)
 option(SKULL_BUILD_TESTS  "Tests (ctest) bauen" ON)
+option(SKULL_STATIC_RUNTIME "Laufzeitbibliotheken statisch einbinden (Release-Pakete: laeuft ohne installierte Bibliotheken; Linux: ganz statisch, Windows: /MT)" OFF)
 
 # Ohne Angabe: Release (Ein-Konfigurations-Generatoren wie Make/Ninja)
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
@@ -42,6 +43,12 @@ set_target_properties(skull PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_RELEASE        "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     "${CMAKE_BINARY_DIR}")
+
+# ---- Statische Laufzeit (fuer die fertigen Pakete) ----
+if(SKULL_STATIC_RUNTIME AND MSVC)
+    # Muss vor dem Anlegen der Ziele gesetzt sein (nur dann gilt es fuer alle)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 # ---- Architektur ----
 set(_skull_x86 FALSE)
@@ -74,6 +81,12 @@ else()
         target_compile_options(skull_flags INTERFACE -mavx2 -mfma)
         set(SKULL_AVX2_ACTIVE TRUE)
     endif()
+endif()
+
+# Linux: vollstaendig statisch (laeuft auf jeder Distribution, ohne passende libstdc++/glibc).
+# macOS erlaubt kein vollstaendig statisches Linken; dort wird nichts geaendert.
+if(SKULL_STATIC_RUNTIME AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(skull_flags INTERFACE -static)
 endif()
 
 # ---- Sanitizer (fuer Tests/CI) ----

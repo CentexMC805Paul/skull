@@ -24,6 +24,10 @@ generate MyLLM {
 }
 ```
 
+**Download:** ready-made packages for Linux, macOS (Apple Silicon) and Windows are attached to each
+[release](../../releases) (no compiler needed); a step-by-step guide from download to your first trained
+model is in [`skull/docs/TUTORIAL.md`](skull/docs/TUTORIAL.md) (German).
+
 **Status:** v1.0.0 — the language and a small trainer work; builds with CMake on Linux, macOS and Windows.
 The models are deliberately tiny: a bigram model (sees one token) and a small causal-attention
 transformer (`context > 1`, trained with Adam, gradients verified against finite differences).

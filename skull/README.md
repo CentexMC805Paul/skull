@@ -30,6 +30,11 @@ Entwürfe für GPU/Python liegen in [`experimental/`](experimental/README.md) un
 
 ## 🚀 Schnellstart (3 Schritte)
 
+> **Ohne Compiler:** Fertige Pakete für Linux, macOS (Apple Silicon) und Windows gibt es auf der
+> Seite **Releases** des Repositories. Entpacken, fertig. Die Schritt-für-Schritt-Anleitung vom Download bis
+> zum ersten selbst trainierten Modell steht in [`docs/TUTORIAL.md`](docs/TUTORIAL.md).
+> Der Rest dieses Abschnitts beschreibt das Bauen aus dem Quelltext.
+
 ### 1️⃣ Installieren und bauen
 
 #### **Linux/macOS:**
@@ -233,7 +238,7 @@ Weitere Felder von `generate`:
 
 | Feld | Standard | Bedeutung |
 |------|----------|-----------|
-| `seed` | zufällig | Mit Seed ist die Ausgabe reproduzierbar (auf jedem System gleich) |
+| `seed` | zufällig | Mit Seed ist die Ausgabe reproduzierbar: dasselbe Programm mit denselben Gewichten liefert denselben Text. Zwischen verschiedenen Builds (anderer Compiler, AVX2 an/aus) können Rundungsunterschiede selten eine andere Zeichenwahl auslösen |
 | `top_k` | 0 | Nur die k wahrscheinlichsten Token zulassen (0 = aus) |
 | `top_p` | 1 | Nur die kleinste Menge wahrscheinlichster Token zulassen, deren Wahrscheinlichkeiten sich zu `top_p` summieren (1 = aus) |
 
@@ -269,7 +274,7 @@ beim Generieren immer die letzten `context` Token.
 | `dim`, `vocab` | 64, 256 | Auch im `define model` setzbar |
 | `val` | 0.1 | Anteil der Daten (vom **Dateiende**), der nicht trainiert, sondern zum Bewerten benutzt wird; 0 = aus. Höchstens 50 000 Token; bei zu wenig Daten (< 100 Token) wird übersprungen, mit Hinweis |
 | `threads` | 0 | Nur Transformer: Anzahl Rechen-Threads (0 = alle Kerne). Parallel laufen die Sequenzen eines Batches (`batch > 1`) und die Validierung. **Das Ergebnis ist bitgleich, egal wie viele Threads rechnen.** |
-| `seed` | 42 | Zufallsstart für Startgewichte und die Reihenfolge der Trainingsfenster. Gleicher Seed + gleiche Daten = **gleiche Gewichte**, auf jedem System |
+| `seed` | 42 | Zufallsstart für Startgewichte und die Reihenfolge der Trainingsfenster. Gleicher Seed + gleiche Daten = **gleiche Gewichte** (bitgleich mit demselben Programm; zwischen verschiedenen Builds, also anderer Compiler oder AVX2 an/aus, unterscheiden sie sich nur in den letzten Stellen: gemessen gleicher Loss auf 6 Stellen). Die Startgewichte sind auf jedem System identisch |
 | `checkpoint` | 0 | Alle N Epochen den kompletten Trainingszustand nach `<out>.ckpt` schreiben (0 = aus) |
 | `stop_after` | 0 | Nach dieser Epoche **pausieren** und einen Checkpoint schreiben (0 = bis `epochs`) |
 | `resume` | – | Pfad eines Checkpoints: Training dort **fortsetzen** |
@@ -334,7 +339,9 @@ Windows: dieselben Optionen mit `build.bat`.
 
 Direkt mit CMake: `cmake -S . -B build && cmake --build build && cd build && ctest`.
 Weitere CMake-Schalter: `-DSKULL_ENABLE_AVX2=OFF` (ältere CPUs), `-DSKULL_SANITIZE=ON`
-(AddressSanitizer/UBSan für Tests), `-DSKULL_USE_OPENCL=ON`.
+(AddressSanitizer/UBSan für Tests), `-DSKULL_TSAN=ON` (ThreadSanitizer), `-DSKULL_USE_OPENCL=ON`,
+`-DSKULL_STATIC_RUNTIME=ON` (Laufzeitbibliotheken statisch einbinden; so werden die fertigen Pakete gebaut).
+Ein mit AVX2 gebautes Programm prüft beim Start, ob die CPU AVX2 kann, und nennt sonst die Lösung.
 
 ---
 

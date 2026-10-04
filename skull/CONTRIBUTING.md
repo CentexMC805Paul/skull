@@ -54,7 +54,25 @@ Numerical code (anything with a hand-written backward pass) needs a gradient che
 differences — see `tests/gradcheck.cpp`. Check that the test actually fails when you break the
 code (e.g. drop a term from the derivative).
 
+Language changes (parser, interpreter) are also covered by `tests/fuzz.cpp`: mutation fuzzing of the
+parser, randomly generated programs and a model test that runs list/text operations in Skull and in a
+C++ model. If you add a language feature, extend the generator or the model there. Tests were checked
+by deliberately breaking the code under test, which is a good habit for new tests too.
+
 `experimental/` is **not** part of the build; see its README before touching it.
+
+## Making a release
+
+Prebuilt packages (Linux, macOS arm64, Windows; AVX2 and `-compat` variants) are built by
+`.github/workflows/release.yml`:
+
+1. Raise `SKULL_VERSION` in `src/version.h`, move the `[Unreleased]` notes of `CHANGELOG.md` under the new version.
+2. Merge to the default branch, then `git tag v<version> && git push origin v<version>`.
+3. The workflow builds every package, runs the full test suite and a smoke test of the *unpacked* package,
+   and attaches the archives plus `SHA256SUMS.txt` to a new GitHub release. It fails if the tag does not
+   match `SKULL_VERSION`.
+
+"Run workflow" (manual) builds and tests the packages without publishing anything.
 
 ## Questions?
 

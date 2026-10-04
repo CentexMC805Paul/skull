@@ -41,6 +41,11 @@ jobs:
             cxx: g++
             args: -DCMAKE_BUILD_TYPE=Debug -DSKULL_TSAN=ON
             tsan: true
+          # So werden die Release-Pakete gebaut (siehe release.yml): statisch gelinkt
+          - name: gcc Release, statisch
+            cxx: g++
+            args: -DCMAKE_BUILD_TYPE=Release -DSKULL_STATIC_RUNTIME=ON
+            static: true
     steps:
       - uses: actions/checkout@v4
       - name: ASLR fuer ThreadSanitizer anpassen
@@ -53,6 +58,9 @@ jobs:
         run: cmake --build build -j2
       - name: Tests
         run: ctest --test-dir build --output-on-failure -j2
+      - name: Ist das Programm wirklich statisch gelinkt?
+        if: matrix.static
+        run: ldd build/skull 2>&1 | grep -qE "not a dynamic executable|statically linked"
 
   # Der Weg aus der README: build.sh / build.bat muessen auf frischen Systemen funktionieren
   build-script:

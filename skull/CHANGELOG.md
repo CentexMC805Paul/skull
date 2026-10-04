@@ -74,6 +74,21 @@ Measured on Tiny Shakespeare (1.1 MB), dim 64, 2 layers, 4 heads, context 64, ba
 - The transformer now separates read-only parameters from a per-call `Workspace`, which is what makes
   the above thread-safe.
 
+### 📦 Added (distribution)
+
+- **Prebuilt packages** (`.github/workflows/release.yml`): Linux x86-64 (fully static, runs on any
+  distribution), macOS Apple Silicon, Windows x86-64 (static runtime, no redistributable needed), each with an
+  AVX2 build and a `-compat` build for older CPUs (except macOS). Pushing a tag `v<version>` builds them,
+  runs the whole test suite, unpacks every archive and smoke-tests it, and publishes a GitHub release with
+  `SHA256SUMS.txt`. Manual runs only build and test. Intel Macs and Linux arm64 are not covered (build from
+  source). The packages are unsigned: macOS and Windows show a warning (documented in the tutorial).
+- `-DSKULL_STATIC_RUNTIME=ON` (fully static on Linux, `/MT` on MSVC); CI builds and tests it on every push.
+- **CPU check at startup**: an AVX2 build on a CPU without AVX2 used to die with "Illegal instruction"; it now
+  says what to do (use the `-compat` package or `-DSKULL_ENABLE_AVX2=OFF`). The failure path itself could not
+  be exercised on an AVX2 machine; the check only reads the CPU feature flags.
+- `docs/TUTORIAL.md` (German): download, language basics, first model, reading loss/perplexity, better
+  training, pause/resume, sampling, troubleshooting. Every command and every quoted number was run.
+
 ### ➕ Added (language)
 
 - **Lists and text indexing**: list literals `[1, "a", [2]]`, `liste[i]` (negative from the end),
@@ -137,6 +152,12 @@ Measured on Tiny Shakespeare (1.1 MB), dim 64, 2 layers, 4 heads, context 64, ba
 - `-DSKULL_SANITIZE=ON` build option.
 
 ### 🔄 Changed
+
+- **Reproducibility claim corrected.** The docs said that a seed gives the same weights "on every system".
+  Measured: the *initial* weights and all random draws are identical everywhere, and training is
+  bit-identical for the same build (any thread count, with pause/resume), but a gcc AVX2 build, a
+  non-AVX2 build and a clang build write weight files that differ in the last bits (the printed loss agrees
+  to 6 digits). The README now says so.
 
 - **Random numbers are now identical on every platform** (`src/rng.h`). `std::mt19937` is fixed by
   the C++ standard, but `std::uniform_real_distribution` / `std::uniform_int_distribution` are not:
