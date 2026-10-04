@@ -1,0 +1,3 @@
+// Unsinniger Header (frueher: riesige Allokation)
+define model M { dim = 8 }
+generate M { weights = "data/garbage.dat"  prompt = "a" }

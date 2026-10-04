@@ -30,19 +30,27 @@ First of all — thank you for wanting to help. Skull is built on the idea that 
 
 ```
 cd skull
-build.bat
+./build.sh        # Linux / macOS
+build.bat         # Windows (Visual Studio 2019+ and CMake)
 ```
+
+Or directly with CMake: `cmake -S . -B build && cmake --build build`.
 
 ## Running tests
 
 ```
-skull.exe examples\tensor_test.skull
-skull.exe examples\train_demo.skull
-skull.exe examples\format_test.skull
-skull.exe examples\generate_demo.skull
+./build.sh --test         # build + run everything   (Windows: build.bat --test)
+cd build && ctest         # run the tests again
 ```
 
-All four should run without errors.
+Each test runs a `.skull` script and checks exit code and output (see `tests/CMakeLists.txt`).
+To add one, drop a script into `tests/cases/` and register it with `skull_case(...)`.
+Please add a regression test with every bug fix.
+
+Memory errors: build with `-DSKULL_SANITIZE=ON` (gcc/clang) and run `ctest`; this enables
+AddressSanitizer, LeakSanitizer and UBSan. CI does this on every push.
+
+`experimental/` is **not** part of the build; see its README before touching it.
 
 ## Questions?
 

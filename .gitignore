@@ -39,3 +39,6 @@ desktop.ini
 .idea/
 *.swp
 *~
+
+# CMake/Skull build output
+build/

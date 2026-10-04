@@ -1,0 +1,9 @@
+# Batch-Dateien muessen unter Windows CRLF-Zeilenenden haben (sonst koennen
+# goto/Labels in cmd.exe fehlschlagen). Shell-Skripte brauchen LF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sh  text eol=lf
+
+# Binaere Testdaten nie umwandeln
+*.dat     binary
+*.weights binary

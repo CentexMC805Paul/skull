@@ -28,7 +28,7 @@
 // ============================================================
 
 // OpenCL einbinden (falls installiert)
-#ifdef SKULL_USE_OPENCL
+#if defined(SKULL_USE_OPENCL) && SKULL_USE_OPENCL
     #ifdef __APPLE__
         #include <OpenCL/opencl.h>
     #else
@@ -93,13 +93,16 @@ inline void skull_print_gpu_status() {
 #else
     std::cout << "[Skull GPU] OpenCL nicht kompiliert\n";
     std::cout << "[Skull GPU] CPU-Modus (SIMD AVX2) wird verwendet\n";
-    std::cout << "[Skull GPU] Fuer GPU-Support: mit SKULL_USE_OPENCL kompilieren\n";
+    std::cout << "[Skull GPU] Fuer GPU-Erkennung: mit -DSKULL_USE_OPENCL=ON bauen (./build.sh --gpu)\n";
 #endif
 }
+
+#if SKULL_GPU_AVAILABLE
 
 // ============================================================
 //  OPENCL KERNEL QUELLCODE
 //  Diese Programme laufen direkt auf der GPU
+//  HINWEIS: Das Training nutzt sie derzeit noch nicht (nur CPU).
 // ============================================================
 static const char* SKULL_MATMUL_KERNEL = R"(
 // Matrixmultiplikation: C = A * B
@@ -165,7 +168,6 @@ __kernel void add(
 //  GPU KONTEXT
 //  Verwaltet OpenCL-Verbindung und kompilierte Kernel
 // ============================================================
-#if SKULL_GPU_AVAILABLE
 
 struct SkullGPU {
     cl_platform_id   platform  = nullptr;
@@ -399,7 +401,7 @@ inline bool skull_init_gpu(bool prefer_amd = false) {
 #else // Kein OpenCL
 
 // Fallback-Stubs wenn OpenCL nicht kompiliert
-inline bool skull_init_gpu(bool prefer_amd = false) {
+inline bool skull_init_gpu(bool /*prefer_amd*/ = false) {
     std::cout << "[Skull GPU] OpenCL nicht verfuegbar\n";
     std::cout << "[Skull GPU] Verwende CPU (AVX2 SIMD)\n";
     return false;

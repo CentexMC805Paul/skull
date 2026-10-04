@@ -1,0 +1,2 @@
+// return ausserhalb einer Funktion muss ein sauberer Fehler sein (frueher: Abbruch mit Core Dump)
+return 1

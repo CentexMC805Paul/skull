@@ -9,6 +9,8 @@
 #include <iostream>
 #include <functional>
 #include <cstring>
+#include <cctype>
+#include <stdexcept>
 
 // ============================================================
 //  SKULL TOKENIZER  v0.7.0
@@ -36,8 +38,13 @@
 enum class FileFormat { TXT, MD, JSON, JSONL, CSV, UNKNOWN };
 
 inline FileFormat detect_format(const std::string& path) {
-    if (path.size() < 4) return FileFormat::TXT;
-    std::string ext = path.substr(path.find_last_of('.'));
+    // Endung nur im letzten Pfadteil suchen ("dir.v2/daten" hat keine Endung)
+    size_t slash = path.find_last_of("/\\");
+    size_t dot   = path.find_last_of('.');
+    if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
+        return FileFormat::TXT;
+    std::string ext = path.substr(dot);
+    for (auto& ch : ext) ch = (char)std::tolower((unsigned char)ch);
     if (ext == ".txt")   return FileFormat::TXT;
     if (ext == ".md")    return FileFormat::MD;
     if (ext == ".json")  return FileFormat::JSON;
@@ -189,10 +196,8 @@ inline std::string extract_csv(const std::string& raw) {
 // ---- Text aus Datei laden und extrahieren ----
 inline std::string load_and_extract(const std::string& path) {
     std::ifstream file(path);
-    if (!file.is_open()) {
-        std::cerr << "[FEHLER] Datei nicht gefunden: " << path << "\n";
-        return "";
-    }
+    if (!file.is_open())
+        throw std::runtime_error("Datei nicht gefunden: " + path);
     std::stringstream buf;
     buf << file.rdbuf();
     std::string raw = buf.str();
@@ -417,10 +422,10 @@ inline TokenizerResult skull_tokenize_file(
     result.text = load_and_extract(path);
     result.file_size = result.text.size();
 
-    if (result.text.empty()) {
-        std::cerr << "[FEHLER] Kein Text extrahiert!\n";
-        return result;
-    }
+    if (result.text.empty())
+        throw std::runtime_error(
+            "Kein Text extrahiert aus '" + path +
+            "' (leere Datei oder Format passt nicht zur Endung)");
 
     std::cout << "[Tokenizer] Text extrahiert: "
               << result.text.size() << " Zeichen\n";

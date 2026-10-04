@@ -24,7 +24,10 @@ generate MyLLM {
 }
 ```
 
-**Status:** v0.7.0 — working, builds on Windows with Visual Studio
+**Status:** v1.0.0 — the language and a small trainer work; builds with CMake on Linux, macOS and Windows.
+The model is deliberately tiny (it sees one token at a time), so it demonstrates training and
+generation rather than producing meaningful text. Attention, GPU training and Python bindings are
+not implemented yet — drafts live in [`skull/experimental/`](skull/experimental/README.md).
 
 ---
 

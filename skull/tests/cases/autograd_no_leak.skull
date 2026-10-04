@@ -1,0 +1,19 @@
+// Tensor-Graphen muessen nach Gebrauch freigegeben werden (frueher: Referenzzyklus, Leck)
+define W = rand_tensor(8, 8)
+define x = ones(8, 1)
+define t = zeros(8, 1)
+define before = live_tensors()
+for i in 1..200 {
+    define h = relu(W * x)
+    define o = sigmoid(W * h)
+    define l = mse_loss(o, t)
+    backward(l)
+    zero_grad(W)
+}
+define after = live_tensors()
+print("live vorher:", before, "nachher:", after)
+if after == before {
+    print("LEAK-TEST OK")
+} else {
+    print("LEAK-TEST FEHLER")
+}

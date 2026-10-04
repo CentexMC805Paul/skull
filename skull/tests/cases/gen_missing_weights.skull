@@ -1,0 +1,2 @@
+define model M { dim = 8 }
+generate M { weights = "data/gibt_es_nicht.weights"  prompt = "a" }

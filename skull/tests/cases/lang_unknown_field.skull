@@ -1,0 +1,3 @@
+// Tippfehler in Feldnamen duerfen nicht still ignoriert werden
+define model M { dim = 8 }
+train M { data = "data/repeat.txt"  epoch = 1  epochs = 1  rate = 0.01 }

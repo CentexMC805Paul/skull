@@ -1,0 +1,3 @@
+// Abgeschnittene Gewichte (frueher: still akzeptiert)
+define model M { dim = 8 }
+generate M { weights = "data/truncated.dat"  prompt = "a" }

@@ -7,7 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+Bug-fix and honesty release. The working program (language, trainer, generator) is the same
+size as before; most of the "v1.0.0" feature list below was announced but never worked.
+
+### 🐛 Fixed
+
+- **Memory leak in training.** Autograd closures captured their own tensor (reference cycle), and
+  every training step allocated a transposed copy of `W_out`. Peak memory grew linearly with
+  steps: 3.7 GB after 50 epochs on a 281-byte file. The trainer now runs without an autograd
+  graph: **constant ~10 MB, and 50 epochs take ~0.5 s instead of ~25 s** with identical loss values.
+- **Autograd counted gradients twice** for tensors used more than once (e.g. `h + h`).
+  `backward()` now walks the graph in topological order.
+- **Training only used the first 500 tokens** of any data file. Epochs now cover all tokens
+  (new option `steps` limits an epoch to a random window for very large files).
+- `batch` was parsed but ignored; it is now real mini-batch SGD (mean gradient).
+- **Generator**: out-of-bounds read when `vocab < 256` or the prompt contained a byte `>= vocab`;
+  `temperature = 0` produced NaN and empty output (now greedy decoding); truncated or corrupt
+  weight files were accepted silently (header and file size are validated now).
+- **BPE** training could not be used for generation (tokenizer was not saved). The BPE merges are
+  now stored in the weights file (optional trailing `TOKB` section; older files stay readable).
+- **Errors now end the program with exit code 1** (missing data file, bad weights, empty file, …).
+  Before, `train` with a missing file printed an error and exited with 0.
+- **Interpreter**: `return` outside a function crashed (abort); unbounded recursion crashed
+  (segfault) — now a clean error at 1000 nested calls, with the interpreter running on a thread
+  with a large stack; `1 == "1"` was `true`; wrong value types (`data = 5`) were silently turned
+  into empty values; unknown fields (typos like `epoch`) and unsupported ones (`layers`, `heads`)
+  were silently ignored — they now produce a warning.
+- A data file without an extension threw an obscure `out_of_range` exception.
+- **Build**: CMake required OpenCL even with `-DSKULL_USE_OPENCL=OFF` (hard-coded `-lOpenCL`),
+  so the documented default build failed on machines without OpenCL. OpenCL is now optional
+  and off by default. Duplicate CUDA blocks removed, Visual Studio builds put `skull.exe` into
+  `build/` as documented, `build.bat` no longer falls through into its help text, the fragile
+  `vcvars` handling is gone (CMake picks the newest Visual Studio itself), and the version number
+  lives in one place (`src/version.h`).
+  AVX2 can be switched off (`-DSKULL_ENABLE_AVX2=OFF`) for older CPUs.
+
+### ➕ Added
+
+- Regression tests (`ctest`, 32 cases) for all of the above, run by GitHub Actions on Linux
+  (gcc, clang, AddressSanitizer/UBSan), macOS and Windows. Run locally with `./build.sh --test`.
+- Builtin `live_tensors()` (number of live tensors; used by the leak test).
+- `-DSKULL_SANITIZE=ON` build option.
+
+### 🔄 Changed
+
+- `gpu = true` now says openly that training still runs on the CPU (it only detects the device).
+- `examples/test.skull` uses a small model and the bundled data instead of a missing file.
+- Banner/version strings of trainer and generator no longer disagree (`v0.5.0` / `v0.7.0` / `v1.0.0`).
+
+### 📦 Moved / Removed
+
+- The unfinished "v1.0.0" draft code (`layers.h`, `model.h`, `optimizer.h`, `parallel.h`, `config.h`,
+  `gpu_cuda.cu`, `skull_python.cpp`, `python/`, `setup.py`) moved to `skull/experimental/`. It never
+  compiled and was never connected to the CLI; see `experimental/README.md` for its status.
+- `./build.sh --cuda` / `build.bat --cuda` removed (the CUDA code never compiled).
+- `src/tensor_info.h` (an unused duplicate fragment).
+
+---
+
 ## [v1.0.0] - 2025-01-XX
+
+> **Note:** The feature list below describes the *plan* for v1.0.0. Of it, only the CMake build,
+> the multi-format tokenizer and BPE exist in the working program. Transformer/LSTM/GRU/Conv1D
+> models, the extra optimizers and schedulers, CUDA, Metal, WordPiece, mixed precision, early stopping,
+> checkpointing, memory pooling, multi-threading and the Python bindings are **not** implemented
+> (partly drafts in `experimental/`, partly only enum names).
 
 ### ✨ New Features
 

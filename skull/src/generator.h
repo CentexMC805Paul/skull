@@ -3,82 +3,44 @@
 #include <vector>
 #include <memory>
 #include <iostream>
-#include <fstream>
 #include <random>
 #include <cmath>
+#include <algorithm>
+#include <stdexcept>
 #include "tensor.h"
+#include "weights.h"
+#include "version.h"
 
 // ============================================================
-//  SKULL GENERATOR  v0.5.0
+//  SKULL GENERATOR
 //  Laedt trainierte Gewichte und generiert Text.
 //
 //  Ablauf:
-//    1. Gewichte aus .weights Datei laden
-//    2. Prompt zeichenweise einlesen
+//    1. Gewichte aus .weights Datei laden und pruefen
+//    2. Prompt tokenisieren (Zeichen oder, falls beim Training
+//       BPE benutzt wurde, mit dem mitgespeicherten BPE-Tokenizer)
 //    3. Fuer jeden Schritt:
-//       a. Letztes Zeichen -> Embedding
+//       a. Letztes Token -> Embedding
 //       b. Hidden = relu(W_hidden * embed)
 //       c. Logits = W_out^T * hidden
-//       d. Softmax -> Wahrscheinlichkeiten
-//       e. Naechstes Zeichen sampeln
-//       f. Ausgeben und wiederholen
+//       d. Naechstes Token waehlen:
+//            temperature > 0: aus der Softmax-Verteilung sampeln
+//            temperature <= 0: immer das wahrscheinlichste (greedy)
+//       e. Ausgeben und wiederholen
 // ============================================================
 
 struct GenerateConfig {
     std::string weights_path = "";
     std::string prompt       = "";
     int         tokens       = 100;
-    double      temperature  = 1.0;  // > 1 = kreativer, < 1 = konservativer
-    size_t      dim          = 64;
-    size_t      vocab        = 256;
+    double      temperature  = 1.0;  // > 1 = kreativer, < 1 = konservativer, <= 0 = greedy
+    // Optionale Gegenpruefung gegen die Gewichte-Datei (0 = nicht gesetzt).
+    // Massgeblich sind immer die Werte aus der Datei.
+    size_t      dim          = 0;
+    size_t      vocab        = 0;
 };
 
-// Gewichte aus Datei laden
-struct LoadedWeights {
-    size_t    dim, vocab;
-    FlatVec   W_embed;   // vocab x dim
-    FlatVec   W_hidden;  // dim   x dim
-    FlatVec   W_out;     // dim   x vocab
-    bool      ok = false;
-};
-
-inline LoadedWeights load_weights(const std::string& path) {
-    LoadedWeights w;
-    std::ifstream f(path, std::ios::binary);
-    if (!f.is_open()) {
-        std::cerr << "[FEHLER] Gewichte nicht gefunden: " << path << "\n";
-        std::cerr << "         Zuerst trainieren: train Modell { ... }\n";
-        return w;
-    }
-
-    // Header pruefen
-    char magic[6] = {};
-    f.read(magic, 5);
-    if (std::string(magic) != "SKULL") {
-        std::cerr << "[FEHLER] Ungueltige Gewichte-Datei.\n";
-        return w;
-    }
-
-    f.read(reinterpret_cast<char*>(&w.dim),   sizeof(size_t));
-    f.read(reinterpret_cast<char*>(&w.vocab), sizeof(size_t));
-
-    // Gewichte laden
-    w.W_embed.resize(w.vocab * w.dim);
-    w.W_hidden.resize(w.dim * w.dim);
-    w.W_out.resize(w.dim * w.vocab);
-
-    f.read(reinterpret_cast<char*>(w.W_embed.data()),
-           w.W_embed.size() * sizeof(double));
-    f.read(reinterpret_cast<char*>(w.W_hidden.data()),
-           w.W_hidden.size() * sizeof(double));
-    f.read(reinterpret_cast<char*>(w.W_out.data()),
-           w.W_out.size() * sizeof(double));
-
-    w.ok = true;
-    return w;
-}
-
-// Softmax mit Temperature
+// Softmax mit Temperature (temperature muss > 0 sein)
 inline void softmax_temp(FlatVec& v, double temperature) {
     double maxv = *std::max_element(v.begin(), v.end());
     double sum  = 0.0;
@@ -89,7 +51,7 @@ inline void softmax_temp(FlatVec& v, double temperature) {
     for (auto& x : v) x /= sum;
 }
 
-// Naechstes Token sampeln (zufallig nach Wahrscheinlichkeit)
+// Naechstes Token sampeln (zufaellig nach Wahrscheinlichkeit)
 inline int sample(const FlatVec& probs, std::mt19937& rng) {
     std::uniform_real_distribution<double> dist(0.0, 1.0);
     double r = dist(rng);
@@ -101,18 +63,20 @@ inline int sample(const FlatVec& probs, std::mt19937& rng) {
     return (int)probs.size() - 1;
 }
 
-// Forward Pass fuer ein einzelnes Zeichen
-inline FlatVec forward_char(int token_id,
-                             const LoadedWeights& w) {
-    size_t dim   = w.dim;
-    size_t vocab = w.vocab;
+inline int argmax(const FlatVec& v) {
+    return (int)(std::max_element(v.begin(), v.end()) - v.begin());
+}
 
-    // 1. Embedding: Zeile token_id aus W_embed -> (dim)
-    FlatVec embed(dim);
-    for (size_t d = 0; d < dim; ++d)
-        embed[d] = w.W_embed[token_id * dim + d];
+// Forward Pass fuer ein einzelnes Token. token_id muss < w.vocab sein.
+inline FlatVec forward_token(int token_id, const SkullWeights& w) {
+    if (token_id < 0 || (size_t)token_id >= w.vocab)
+        throw std::runtime_error("generate: Token-ID " + std::to_string(token_id) +
+                                 " liegt ausserhalb des Vokabulars (" +
+                                 std::to_string(w.vocab) + ")");
+    const size_t dim = w.dim, vocab = w.vocab;
 
-    // 2. Hidden: W_hidden * embed -> (dim), dann ReLU
+    const double* embed = &w.W_embed[(size_t)token_id * dim];
+
     FlatVec hidden(dim, 0.0);
     for (size_t i = 0; i < dim; ++i) {
         double sum = 0.0;
@@ -121,71 +85,90 @@ inline FlatVec forward_char(int token_id,
         hidden[i] = sum > 0.0 ? sum : 0.0;  // ReLU
     }
 
-    // 3. Logits: W_out^T * hidden -> (vocab)
-    //    W_out ist (dim x vocab), also W_out^T * hidden:
-    //    logits[j] = sum_i(W_out[i][j] * hidden[i])
+    // logits[j] = sum_i(W_out[i][j] * hidden[i])
     FlatVec logits(vocab, 0.0);
-    for (size_t j = 0; j < vocab; ++j)
-        for (size_t i = 0; i < dim; ++i)
-            logits[j] += w.W_out[i * vocab + j] * hidden[i];
-
+    for (size_t i = 0; i < dim; ++i) {
+        const double h = hidden[i];
+        if (h == 0.0) continue;
+        const double* orow = &w.W_out[i * vocab];
+        for (size_t j = 0; j < vocab; ++j) logits[j] += orow[j] * h;
+    }
     return logits;
 }
 
+// Nur druckbare ASCII-Zeichen, Newline und Tab ausgeben; Rest als Leerzeichen.
+inline void print_safe(const std::string& s) {
+    for (char c : s) {
+        if ((c >= 32 && c <= 126) || c == '\n' || c == '\t') std::cout << c;
+        else std::cout << ' ';
+    }
+}
+
 inline void skull_generate(const GenerateConfig& cfg) {
+    // Gewichte zuerst laden: Fehler (Datei fehlt/kaputt) sollen vor dem Banner kommen.
+    SkullWeights w = load_weights(cfg.weights_path);
+
     std::cout << "\n";
     std::cout << "========================================\n";
-    std::cout << "  Skull Generator v0.5.0\n";
+    std::cout << "  Skull Generator v" SKULL_VERSION "\n";
     std::cout << "========================================\n";
     std::cout << "  Gewichte: " << cfg.weights_path << "\n";
     std::cout << "  Prompt:   \"" << cfg.prompt      << "\"\n";
     std::cout << "  Tokens:   " << cfg.tokens       << "\n";
-    std::cout << "  Temp:     " << cfg.temperature  << "\n";
+    if (cfg.temperature > 0.0) std::cout << "  Temp:     " << cfg.temperature << "\n";
+    else                       std::cout << "  Temp:     " << cfg.temperature << " (greedy)\n";
     std::cout << "========================================\n\n";
 
-    // 1. Gewichte laden
-    LoadedWeights w = load_weights(cfg.weights_path);
-    if (!w.ok) return;
+    if (cfg.tokens < 0)
+        throw std::runtime_error("generate: 'tokens' darf nicht negativ sein");
+    if (!std::isfinite(cfg.temperature))
+        throw std::runtime_error("generate: 'temperature' muss eine endliche Zahl sein");
 
-    std::cout << "[Skull] Gewichte geladen: "
-              << w.dim << "d, vocab=" << w.vocab << "\n\n";
+    std::cout << "[Skull] Gewichte geladen: " << w.dim << "d, vocab=" << w.vocab
+              << (w.has_bpe ? ", BPE-Tokenizer" : ", Zeichen-Tokenizer") << "\n";
+    if (cfg.dim   != 0 && cfg.dim   != w.dim)
+        std::cout << "[WARNUNG] Modell definiert dim=" << cfg.dim
+                  << ", die Gewichte haben dim=" << w.dim << " (Gewichte gelten)\n";
+    if (cfg.vocab != 0 && !w.has_bpe && cfg.vocab != w.vocab)
+        std::cout << "[WARNUNG] Modell definiert vocab=" << cfg.vocab
+                  << ", die Gewichte haben vocab=" << w.vocab << " (Gewichte gelten)\n";
+    std::cout << "\n";
 
-    // 2. Zufallsgenerator
+    // Prompt in Token-IDs umwandeln
+    std::vector<int> prompt_ids = w.has_bpe ? w.bpe.encode(cfg.prompt)
+                                            : tokenize_chars(cfg.prompt);
+    size_t clipped = 0;
+    for (auto& id : prompt_ids)
+        if (id < 0 || (size_t)id >= w.vocab) { id = 0; ++clipped; }   // wie im Training
+    if (clipped > 0)
+        std::cout << "[Skull] Hinweis: " << clipped << " Prompt-Token(s) liegen ausserhalb von vocab="
+                  << w.vocab << " und werden als ID 0 behandelt\n";
+
+    // Startpunkt: letztes Prompt-Token, sonst Leerzeichen (ID 32), falls im Vokabular
+    int current = prompt_ids.empty() ? (w.vocab > 32 ? 32 : 0) : prompt_ids.back();
+
     std::mt19937 rng(std::random_device{}());
 
-    // 3. Prompt ausgeben
     std::cout << "--- Ausgabe ---\n";
     std::cout << cfg.prompt;
     std::cout.flush();
 
-    // 4. Letztes Zeichen des Prompts als Startpunkt
-    int current_token = 32; // Leerzeichen als Default
-    if (!cfg.prompt.empty())
-        current_token = (unsigned char)cfg.prompt.back();
-
-    // 5. Text generieren
     for (int t = 0; t < cfg.tokens; ++t) {
-        // Forward Pass
-        FlatVec logits = forward_char(current_token, w);
+        FlatVec logits = forward_token(current, w);
 
-        // Softmax mit Temperature
-        softmax_temp(logits, cfg.temperature);
-
-        // Naechstes Token sampeln
-        int next_token = sample(logits, rng);
-
-        // Druckbares Zeichen ausgeben
-        char c = (char)next_token;
-        if (c >= 32 && c <= 126) {
-            std::cout << c;
-        } else if (c == '\n' || c == '\t') {
-            std::cout << c;
+        int next;
+        if (cfg.temperature > 0.0) {
+            softmax_temp(logits, cfg.temperature);
+            next = sample(logits, rng);
         } else {
-            std::cout << ' '; // nicht-druckbare Zeichen als Leerzeichen
+            next = argmax(logits);
         }
+
+        if (w.has_bpe) print_safe(w.bpe.vocab[(size_t)next]);
+        else           print_safe(std::string(1, (char)next));
         std::cout.flush();
 
-        current_token = next_token;
+        current = next;
     }
 
     std::cout << "\n--- Ende ---\n\n";

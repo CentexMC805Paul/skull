@@ -1,0 +1,2 @@
+define model M { dim = 8 }
+train M { data = "data/empty.txt"  epochs = 1 }

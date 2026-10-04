@@ -8,12 +8,24 @@
 #include <random>
 #include <functional>
 #include <iostream>
+#include <unordered_set>
+#include <utility>
 
 // ============================================================
-//  SKULL TENSOR  v0.4.0
+//  SKULL TENSOR
+//
+//  Autograd: Jeder Tensor kennt seine Eingaben (parents) und eine
+//  backward_fn. backward() sortiert den Graphen topologisch, damit
+//  jede backward_fn genau einmal laeuft (auch bei Diamant-Graphen,
+//  z.B. y = h + h).
+//
+//  Speicher: backward_fn darf ihren eigenen Tensor NICHT per
+//  shared_ptr einfangen (Referenzzyklus -> Leck). Sie bekommt
+//  stattdessen einen rohen Zeiger; der Tensor lebt solange wie
+//  seine backward_fn, da sie in ihm gespeichert ist.
 // ============================================================
 
-#if defined(__AVX2__) || (defined(_MSC_VER) && defined(__AVX2__))
+#if defined(__AVX2__) && (defined(__FMA__) || defined(_MSC_VER))
     #include <immintrin.h>
     #define SKULL_AVX2 1
 #else
@@ -26,6 +38,16 @@ inline size_t flat_idx(size_t i, size_t j, size_t cols) {
     return i * cols + j;
 }
 
+// Zaehlt lebende Tensoren (auch Kopien). Dient dem Skull-Builtin
+// live_tensors() und damit Regressionstests gegen Speicherlecks.
+struct TensorLiveCounter {
+    static inline size_t count = 0;
+    TensorLiveCounter()                           { ++count; }
+    TensorLiveCounter(const TensorLiveCounter&)   { ++count; }
+    TensorLiveCounter& operator=(const TensorLiveCounter&) = default;
+    ~TensorLiveCounter()                          { --count; }
+};
+
 struct Tensor {
     size_t  rows, cols;
     FlatVec data;
@@ -34,6 +56,7 @@ struct Tensor {
 
     std::vector<std::shared_ptr<Tensor>> parents;
     std::function<void()>                backward_fn;
+    TensorLiveCounter                    live_;
 
     Tensor(size_t r, size_t c, double init = 0.0)
         : rows(r), cols(c), data(r * c, init), grad(r * c, 0.0) {}
@@ -50,12 +73,29 @@ struct Tensor {
 
     void backward() {
         std::fill(grad.begin(), grad.end(), 1.0);
-        _backward();
-    }
 
-    void _backward() {
-        if (backward_fn) backward_fn();
-        for (auto& p : parents) if (p) p->_backward();
+        // Topologische Ordnung per iterativer Tiefensuche (kein Stack-Overflow
+        // bei tiefen Graphen). Post-Order: Eingaben stehen vor ihren Nutzern.
+        std::vector<Tensor*> order;
+        std::unordered_set<Tensor*> seen;
+        std::vector<std::pair<Tensor*, size_t>> stack;
+        stack.push_back({this, 0});
+        seen.insert(this);
+        while (!stack.empty()) {
+            Tensor* node = stack.back().first;
+            size_t  idx  = stack.back().second++;
+            if (idx < node->parents.size()) {
+                Tensor* p = node->parents[idx].get();
+                if (p && seen.insert(p).second) stack.push_back({p, 0});
+            } else {
+                order.push_back(node);
+                stack.pop_back();
+            }
+        }
+
+        // Rueckwaerts durchlaufen: Ergebnis zuerst, Eingaben danach.
+        for (auto it = order.rbegin(); it != order.rend(); ++it)
+            if ((*it)->backward_fn) (*it)->backward_fn();
     }
 
     void print() const {
@@ -204,19 +244,20 @@ inline TensorPtr tensor_matmul(TensorPtr A, TensorPtr B) {
     }
 
     C->parents = {A, B};
-    C->backward_fn = [A, B, C, lR, lC, rC]() {
+    Tensor* Cp = C.get();  // roh, kein shared_ptr: sonst Referenzzyklus
+    C->backward_fn = [A, B, Cp, lR, lC, rC]() {
         if (A->requires_grad)
             for (size_t i = 0; i < lR; ++i)
                 for (size_t k = 0; k < lC; ++k)
                     for (size_t j = 0; j < rC; ++j)
                         A->grad[flat_idx(i,k,lC)] +=
-                            C->grad[flat_idx(i,j,rC)] * B->data[flat_idx(k,j,rC)];
+                            Cp->grad[flat_idx(i,j,rC)] * B->data[flat_idx(k,j,rC)];
         if (B->requires_grad)
             for (size_t k = 0; k < lC; ++k)
                 for (size_t j = 0; j < rC; ++j)
                     for (size_t i = 0; i < lR; ++i)
                         B->grad[flat_idx(k,j,rC)] +=
-                            A->data[flat_idx(i,k,lC)] * C->grad[flat_idx(i,j,rC)];
+                            A->data[flat_idx(i,k,lC)] * Cp->grad[flat_idx(i,j,rC)];
     };
     return C;
 }
@@ -227,10 +268,11 @@ inline TensorPtr tensor_relu(TensorPtr A) {
     simd_relu(A->data, C->data);
     C->requires_grad = A->requires_grad;
     C->parents = {A};
-    C->backward_fn = [A, C]() {
+    Tensor* Cp = C.get();
+    C->backward_fn = [A, Cp]() {
         if (!A->requires_grad) return;
         for (size_t i = 0; i < A->size(); ++i)
-            A->grad[i] += (A->data[i] > 0.0) ? C->grad[i] : 0.0;
+            A->grad[i] += (A->data[i] > 0.0) ? Cp->grad[i] : 0.0;
     };
     return C;
 }
@@ -240,11 +282,12 @@ inline TensorPtr tensor_sigmoid(TensorPtr A) {
     simd_sigmoid(A->data, C->data);
     C->requires_grad = A->requires_grad;
     C->parents = {A};
-    C->backward_fn = [A, C]() {
+    Tensor* Cp = C.get();
+    C->backward_fn = [A, Cp]() {
         if (!A->requires_grad) return;
         for (size_t i = 0; i < A->size(); ++i) {
-            double s = C->data[i];
-            A->grad[i] += C->grad[i] * s * (1.0 - s);
+            double s = Cp->data[i];
+            A->grad[i] += Cp->grad[i] * s * (1.0 - s);
         }
     };
     return C;
@@ -255,11 +298,12 @@ inline TensorPtr tensor_tanh(TensorPtr A) {
     simd_tanh(A->data, C->data);
     C->requires_grad = A->requires_grad;
     C->parents = {A};
-    C->backward_fn = [A, C]() {
+    Tensor* Cp = C.get();
+    C->backward_fn = [A, Cp]() {
         if (!A->requires_grad) return;
         for (size_t i = 0; i < A->size(); ++i) {
-            double t = C->data[i];
-            A->grad[i] += C->grad[i] * (1.0 - t * t);
+            double t = Cp->data[i];
+            A->grad[i] += Cp->grad[i] * (1.0 - t * t);
         }
     };
     return C;
@@ -273,9 +317,10 @@ inline TensorPtr tensor_add(TensorPtr A, TensorPtr B) {
     simd_add(A->data, B->data, C->data);
     C->requires_grad = A->requires_grad || B->requires_grad;
     C->parents = {A, B};
-    C->backward_fn = [A, B, C]() {
-        if (A->requires_grad) A->accum_grad(C->grad);
-        if (B->requires_grad) B->accum_grad(C->grad);
+    Tensor* Cp = C.get();
+    C->backward_fn = [A, B, Cp]() {
+        if (A->requires_grad) A->accum_grad(Cp->grad);
+        if (B->requires_grad) B->accum_grad(Cp->grad);
     };
     return C;
 }
@@ -287,11 +332,12 @@ inline TensorPtr tensor_sub(TensorPtr A, TensorPtr B) {
     simd_sub(A->data, B->data, C->data);
     C->requires_grad = A->requires_grad || B->requires_grad;
     C->parents = {A, B};
-    C->backward_fn = [A, B, C]() {
-        if (A->requires_grad) A->accum_grad(C->grad);
+    Tensor* Cp = C.get();
+    C->backward_fn = [A, B, Cp]() {
+        if (A->requires_grad) A->accum_grad(Cp->grad);
         if (B->requires_grad) {
-            FlatVec neg(C->grad.size());
-            for (size_t i = 0; i < neg.size(); ++i) neg[i] = -C->grad[i];
+            FlatVec neg(Cp->grad.size());
+            for (size_t i = 0; i < neg.size(); ++i) neg[i] = -Cp->grad[i];
             B->accum_grad(neg);
         }
     };
@@ -303,10 +349,11 @@ inline TensorPtr tensor_scale(TensorPtr A, double scalar) {
     simd_scale(A->data, scalar, C->data);
     C->requires_grad = A->requires_grad;
     C->parents = {A};
-    C->backward_fn = [A, C, scalar]() {
+    Tensor* Cp = C.get();
+    C->backward_fn = [A, Cp, scalar]() {
         if (!A->requires_grad) return;
-        FlatVec g(C->grad.size());
-        simd_scale(C->grad, scalar, g);
+        FlatVec g(Cp->grad.size());
+        simd_scale(Cp->grad, scalar, g);
         A->accum_grad(g);
     };
     return C;

@@ -1,15 +1,17 @@
-# Skull v0.6.0 — Was funktioniert
+# Skull v1.0.0 — Was funktioniert
 
 ## Die Sprache
 ```skull
 define x = 42
 define func name(args) { return args + 1 }
-if x > 10 { print("gross") }
+if x > 10 { print("gross") } else { print("klein") }
 for i in 1..100 { print(i) }
 while x > 0 { x = x - 1 }
 ```
+Rekursion bis 1000 Ebenen, typsichere Vergleiche, Fehlermeldungen mit Zeilennummer.
+Fehlt: `else if`, `and`/`or`/`!`, `%`, Listen.
 
-## Tensoren & KI-Mathematik (AVX2)
+## Tensoren & KI-Mathematik (AVX2, Autograd)
 ```skull
 define W = rand_tensor(512, 512)
 define h = relu(W * x)
@@ -21,8 +23,13 @@ update(W, 0.001)
 ## Training
 ```skull
 define model MeinLLM { dim = 64  vocab = 256 }
-train MeinLLM { data = "text.txt"  epochs = 100  rate = 0.005 }
+train MeinLLM { data = "text.txt"  epochs = 100  rate = 0.005  batch = 8 }
 ```
+- Modell: Embedding → ReLU-Hidden → Softmax, ein Token Kontext (Bigram). Kein Transformer.
+- Alle Tokens pro Epoche (oder ein Fenster mit `steps`), echtes Mini-Batch, BPE optional.
+- Konstanter Speicherbedarf, kein Autograd-Graph im Trainingsschritt.
+- Formate: `.txt`, `.md`, `.json`, `.jsonl`, `.csv`.
+- Rechnet auf der CPU. `gpu = true` erkennt nur das Gerät.
 
 ## Textgenerierung
 ```skull
@@ -30,25 +37,38 @@ generate MeinLLM {
     weights     = "text.txt.weights"
     prompt      = "Hallo"
     tokens      = 100
-    temperature = 0.8
+    temperature = 0.8      // 0 = greedy
 }
 ```
+
+## Tests
+`./build.sh --test` (oder `ctest` im Build-Verzeichnis): 32 Tests, darunter Regressionstests für
+Speicherleck, Autograd, Trainingsdaten-Limit und Generator-Randfälle. CI läuft auf Linux (gcc, clang,
+Sanitizer), macOS und Windows.
 
 ## Aktueller Stand der Dateien
 ```
 skull/src/
-  lexer.h        — Tokenizer          (fertig)
-  ast.h          — Syntaxbaum         (fertig)
-  parser.h       — Parser             (fertig)
-  interpreter.h  — Ausfuehrung        (fertig)
-  tensor.h       — SIMD Tensor-Engine (fertig, AVX2)
-  trainer.h      — Echtes Training    (fertig)
-  generator.h    — Textgenerierung    (fertig)
-  main.cpp       — Einstiegspunkt     (fertig)
+  version.h      — Versionsnummer (einzige Quelle)
+  lexer.h        — Tokenizer der Sprache   (fertig)
+  ast.h          — Syntaxbaum              (fertig)
+  parser.h       — Parser                  (fertig)
+  interpreter.h  — Ausführung              (fertig)
+  stack.h        — Interpreter-Thread mit großem Stack
+  tensor.h       — Tensor-Engine + Autograd (AVX2)
+  tokenizer.h    — Dateiformate + BPE
+  weights.h      — Gewichte speichern/laden (mit Prüfung)
+  trainer.h      — Training
+  generator.h    — Textgenerierung
+  gpu.h          — OpenCL-Geräteerkennung (noch ohne Rechenarbeit)
+  main.cpp       — Einstiegspunkt
+skull/experimental/ — Entwürfe (Transformer, Optimizer, CUDA, Python), nicht im Build
+skull/tests/        — ctest-Fälle
 ```
 
-## Naechste Schritte (Prioritaet)
-1. Groessere Trainingsmengen unterstuetzen
-2. Mehrere Transformer-Layer
-3. Attention-Mechanismus einbauen
-4. GitHub veroeffentlichen
+## Nächste Schritte (Priorität)
+1. Modell mit Kontext > 1 Token: erst eine Schicht Attention mit Gradiententest, dann Transformer
+   (Ansatzpunkt: `experimental/layers.h`, siehe dort).
+2. Sprache: `else if`, `and`/`or`/`!`, `%`.
+3. GPU-Rechnen: die OpenCL-Kernel in `gpu.h` an den Trainer anbinden und gegen die CPU-Version testen.
+4. Gewichte-Format versionieren, bevor weitere Schichten dazukommen.

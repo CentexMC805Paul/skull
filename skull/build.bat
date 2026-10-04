@@ -1,222 +1,137 @@
 @echo off
-:: ============================================================
-::  SKULL EINFACHES BUILD-SKRIPT FÜR WINDOWS v1.0.0
-::  Einfach ausführen: build.bat
-:: ============================================================
+setlocal EnableExtensions
 
-:: Farben für bessere Lesbarkeit (Windows 10+)
-@echo off
-setlocal enabledelayedexpansion
+rem ============================================================
+rem  SKULL BUILD-SKRIPT (Windows)
+rem  Einfach ausfuehren: build.bat
+rem
+rem  Voraussetzung: CMake und Visual Studio (2019 oder neuer) mit den
+rem  C++-Werkzeugen. CMake waehlt automatisch das neueste installierte
+rem  Visual Studio; ein Entwickler-Eingabeaufforderungs-Fenster ist
+rem  nicht noetig.
+rem ============================================================
 
-:: ============================================================
-::  HILFE ANZEIGEN
-:: ============================================================
-:show_help
-    echo.
-    echo === Skull Build-Skript v1.0.0 ===
-    echo.
-    echo Verwendung:
-    echo   build.bat              # Standard: CPU mit AVX2
-    echo   build.bat --gpu       # Mit OpenCL GPU-Unterstützung
-    echo   build.bat --cuda      # Mit CUDA GPU-Unterstützung (NVIDIA)
-    echo   build.bat --debug     # Debug-Modus (langsamer, mehr Infos)
-    echo   build.bat --clean     # Build-Verzeichnis bereinigen
-    echo   build.bat --help      # Diese Hilfe anzeigen
-    echo.
-    echo Beispiele nach dem Build:
-    echo   skull.exe examples\hello.skull
-    echo   skull.exe examples\train.skull
-    echo   skull.exe examples\generate.skull
-    echo.
-    goto :eof
+cd /d "%~dp0"
 
-:: ============================================================
-::  ARGUMENTE PARSEN
-:: ============================================================
-set USE_GPU=0
-set USE_CUDA=0
-set DEBUG=0
-set CLEAN=0
-set HELP=0
+set "USE_GPU=0"
+set "DEBUG=0"
+set "RUN_TESTS=0"
+set "CLEAN=0"
+set "RESULT=0"
+
+rem Bei Doppelklick (cmd /c) am Ende pausieren, damit das Fenster nicht verschwindet
+set "PAUSE_AT_END=0"
+echo %cmdcmdline% | find /i "/c" >nul && set "PAUSE_AT_END=1"
 
 :parse_args
-if "%1"=="" goto :end_parse
-if "%1"=="--gpu" set USE_GPU=1 & shift & goto :parse_args
-if "%1"=="--cuda" set USE_CUDA=1 & set USE_GPU=1 & shift & goto :parse_args
-if "%1"=="--debug" set DEBUG=1 & shift & goto :parse_args
-if "%1"=="--clean" set CLEAN=1 & shift & goto :parse_args
-if "%1"=="--help" set HELP=1 & shift & goto :parse_args
-if "%1"=="-h" set HELP=1 & shift & goto :parse_args
-:end_parse
+if "%~1"=="" goto args_done
+if /i "%~1"=="--gpu"   set "USE_GPU=1"   & shift & goto parse_args
+if /i "%~1"=="--debug" set "DEBUG=1"     & shift & goto parse_args
+if /i "%~1"=="--test"  set "RUN_TESTS=1" & shift & goto parse_args
+if /i "%~1"=="--clean" set "CLEAN=1"     & shift & goto parse_args
+if /i "%~1"=="--help"  goto show_help
+if /i "%~1"=="-h"      goto show_help
+echo Unbekannte Option: %~1
+echo.
+set "RESULT=1"
+goto show_help
+:args_done
 
-:: Hilfe anzeigen wenn gewünscht
-if %HELP%==1 (
-    call :show_help
-    exit /b 0
-)
-
-:: ============================================================
-::  BEREINIGEN
-:: ============================================================
-if %CLEAN%==1 (
-    echo === Bereinige Build-Verzeichnis ===
+if "%CLEAN%"=="1" (
     if exist build rmdir /s /q build
-    echo Fertig! Build-Verzeichnis gelöscht.
-    exit /b 0
+    echo Build-Verzeichnis geloescht.
+    goto done
 )
 
-:: ============================================================
-::  VISUAL STUDIO PRÜFEN
-:: ============================================================
-echo === Prüfe Visual Studio ===
-
-:: Versuche verschiedene VS-Versionen
-set VCVARS_BAT=""
-set VS_FOUND=0
-
-:: VS 2022 Community
-if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" (
-    set VCVARS_BAT="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-    set VS_FOUND=1
-    echo Visual Studio 2022 Community gefunden
+echo === Pruefe Abhaengigkeiten ===
+where cmake >nul 2>&1
+if errorlevel 1 (
+    echo FEHLER: cmake wurde nicht gefunden.
+    echo   Installiere CMake: https://cmake.org/download/
+    echo   Installiere Visual Studio mit den C++-Werkzeugen: https://visualstudio.microsoft.com/downloads/
+    set "RESULT=1"
+    goto done
 )
 
-:: VS 2022 Professional
-if %VS_FOUND%==0 if exist "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat" (
-    set VCVARS_BAT="C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat"
-    set VS_FOUND=1
-    echo Visual Studio 2022 Professional gefunden
-)
+set "CONFIG=Release"
+if "%DEBUG%"=="1" set "CONFIG=Debug"
 
-:: VS 2019 Community
-if %VS_FOUND%==0 if exist "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars64.bat" (
-    set VCVARS_BAT="C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars64.bat"
-    set VS_FOUND=1
-    echo Visual Studio 2019 Community gefunden
-)
-
-:: VS 2017 Community
-if %VS_FOUND%==0 if exist "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvars64.bat" (
-    set VCVARS_BAT="C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvars64.bat"
-    set VS_FOUND=1
-    echo Visual Studio 2017 Community gefunden
-)
-
-:: Kein VS gefunden
-if %VS_FOUND%==0 (
-    echo FEHLER: Visual Studio nicht gefunden!
-    echo.
-    echo Installiere Visual Studio 2022 mit C++-Tools:
-    echo   https://visualstudio.microsoft.com/downloads/
-    echo.
-    echo Oder installiere die Build-Tools:
-    echo   https://visualstudio.microsoft.com/visual-cpp-build-tools/
-    echo.
-    pause
-    exit /b 1
-)
-
-:: VS-Umgebung laden
-echo.
-echo Lade Visual Studio Umgebung...
-call "%VCVARS_BAT%" > nul 2>&1
-
-:: ============================================================
-::  BUILD-KONFIGURATION
-:: ============================================================
-echo.
-echo === Konfiguriere Build ===
-
-:: Build-Verzeichnis erstellen
-if not exist build mkdir build
-cd build
-
-:: CMake-Befehl zusammenbauen
-set CMAKE_CMD=cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
-
-if %DEBUG%==1 (
-    set CMAKE_CMD=cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Debug
-    echo Debug-Modus aktiviert (langsamer, mehr Infos)
-)
-
-if %USE_GPU%==1 (
-    set CMAKE_CMD=%CMAKE_CMD% -DSKULL_USE_OPENCL=ON
-    echo OpenCL GPU-Unterstützung aktiviert
-)
-
-if %USE_CUDA%==1 (
-    set CMAKE_CMD=%CMAKE_CMD% -DSKULL_USE_CUDA=ON
-    echo CUDA GPU-Unterstützung aktiviert
-)
+set "CMAKE_OPTS=-DCMAKE_BUILD_TYPE=%CONFIG%"
+if "%USE_GPU%"=="1" set "CMAKE_OPTS=%CMAKE_OPTS% -DSKULL_USE_OPENCL=ON"
 
 echo.
-echo Ausführender Befehl:
-echo   %CMAKE_CMD%
-echo.
-
-:: ============================================================
-::  CMAKE AUSFÜHREN
-:: ============================================================
-echo === Führe CMake aus ===
-%CMAKE_CMD%
-
-if %ERRORLEVEL% neq 0 (
-    echo.
-    echo FEHLER: CMake ist fehlgeschlagen!
-    echo.
-    echo Mögliche Lösungen:
-    echo   1. Installiere fehlende Abhängigkeiten
-    echo   2. Für CUDA: Installiere CUDA Toolkit
-    echo      https://developer.nvidia.com/cuda-downloads
-    echo   3. Für OpenCL: Installiere OpenCL SDK
-    echo      https://developer.nvidia.com/opencl
-    echo.
-    pause
-    exit /b 1
-)
+echo === Konfiguriere (%CONFIG%) ===
+echo   cmake -S . -B build %CMAKE_OPTS%
+cmake -S . -B build %CMAKE_OPTS%
+if errorlevel 1 goto cmake_failed
 
 echo.
 echo === Kompiliere Skull ===
+cmake --build build --config %CONFIG% --parallel
+if errorlevel 1 goto build_failed
 
-:: Anzahl der CPU-Kerne erkennen (einfach auf 8 setzen für Windows)
-set NUM_CORES=8
-
-:: Kompilieren
-cmake --build . --config Release --parallel %NUM_CORES%
-
-if %ERRORLEVEL% neq 0 (
-    echo.
-    echo FEHLER: Kompilierung fehlgeschlagen!
-    echo.
-    pause
-    exit /b 1
+if not exist build\skull.exe (
+    echo FEHLER: build\skull.exe wurde nicht erzeugt!
+    set "RESULT=1"
+    goto done
 )
 
 echo.
-echo ==============================
-echo  BUILD ERFOLGREICH!
-echo ==============================
-echo.
+echo === BUILD ERFOLGREICH: %cd%\build\skull.exe ===
 
-:: Executable prüfen
-if exist skull.exe (
-    echo skull.exe erstellt in: %cd%\skull.exe
-    echo.
-    echo === Testen ===
-    echo Führe folgende Befehle aus, um Skull zu testen:
-    echo.
-    echo   cd ..
-    echo   skull.exe examples\hello.skull      # Grundlagen testen
-    echo   skull.exe examples\train.skull      # Modell trainieren
-    echo   skull.exe examples\generate.skull  # Text generieren
-    echo.
-) else (
-    echo FEHLER: skull.exe nicht gefunden!
-    pause
-    exit /b 1
+if not "%RUN_TESTS%"=="1" goto tests_done
+echo.
+echo === Fuehre Tests aus ===
+pushd build
+ctest -C %CONFIG% --output-on-failure
+if errorlevel 1 (
+    popd
+    goto tests_failed
 )
+popd
+:tests_done
 
-cd ..
 echo.
-echo Skull v1.0.0 ist bereit zur Verwendung!
-pause
+echo Probiere es aus:
+echo   build\skull.exe examples\hello.skull      Grundlagen
+echo   build\skull.exe examples\train.skull      Modell trainieren
+echo   build\skull.exe examples\generate.skull   Text generieren
+goto done
+
+:cmake_failed
+echo.
+echo FEHLER: CMake ist fehlgeschlagen!
+echo   Ist Visual Studio mit den C++-Werkzeugen installiert?
+if "%USE_GPU%"=="1" echo   Fuer --gpu wird zusaetzlich ein OpenCL-SDK benoetigt. Ohne --gpu bauen geht auch.
+set "RESULT=1"
+goto done
+
+:build_failed
+echo.
+echo FEHLER: Kompilierung fehlgeschlagen!
+set "RESULT=1"
+goto done
+
+:tests_failed
+echo.
+echo FEHLER: Tests sind fehlgeschlagen!
+set "RESULT=1"
+goto done
+
+:show_help
+echo.
+echo === Skull Build-Skript ===
+echo.
+echo Verwendung:
+echo   build.bat            Standard: CPU (AVX2)
+echo   build.bat --gpu      Mit OpenCL-Geraeteerkennung (braucht OpenCL-SDK)
+echo   build.bat --debug    Debug-Modus
+echo   build.bat --test     Nach dem Bauen alle Tests ausfuehren
+echo   build.bat --clean    Build-Verzeichnis loeschen
+echo   build.bat --help     Diese Hilfe
+echo.
+goto done
+
+:done
+if "%PAUSE_AT_END%"=="1" pause
+exit /b %RESULT%

@@ -1,0 +1,3 @@
+// data muss ein String sein
+define model M { dim = 8 }
+train M { data = 5 }

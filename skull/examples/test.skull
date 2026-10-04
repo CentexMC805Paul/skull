@@ -59,16 +59,14 @@ print("Summe 1 bis 100 =", summe(1, 100))
 
 // Modell definieren (Skull-spezifisch!)
 define model MeinLLM {
-    vocab  = 50000
-    dim    = 512
-    layers = 6
-    heads  = 8
+    vocab = 256
+    dim   = 32
 }
 
-// Training starten
+// Training starten (batch = 8: der Gradient wird ueber 8 Tokens gemittelt)
 train MeinLLM {
-    data   = "texte.txt"
-    epochs = 100
-    rate   = 0.001
-    batch  = 32
+    data   = "examples/training_data.txt"
+    epochs = 20
+    rate   = 0.05
+    batch  = 8
 }

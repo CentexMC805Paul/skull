@@ -1,0 +1,19 @@
+// Diamant-Graph: y = h + h.  L = (2w)^2 = 4w^2, dL/dw = 8w.
+// Nach update(W, 0.01): w1 = w0 * (1 - 0.08) = 0.92 * w0.
+// (Fehlerhafte Autograd-Version zaehlte den Gradienten doppelt: 0.84 * w0)
+define W = rand_tensor(1, 1)
+define x = ones(1, 1)
+define w0 = get_loss(W)
+define h = W * x
+define y = h + h
+define l = mse_loss(y, zeros(1, 1))
+backward(l)
+update(W, 0.01)
+define w1 = get_loss(W)
+define ratio = w1 / w0
+print("ratio =", ratio)
+if abs(ratio - 0.92) < 0.000001 {
+    print("GRAD OK")
+} else {
+    print("GRAD FALSCH")
+}

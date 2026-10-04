@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: skull
+
+jobs:
+  # Linux: verschiedene Compiler und Sanitizer (AddressSanitizer/LeakSanitizer/UBSan
+  # fangen Speicherlecks und Zugriffe ausserhalb von Puffern)
+  linux:
+    name: Linux (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gcc Release
+            cxx: g++
+            args: -DCMAKE_BUILD_TYPE=Release
+          - name: clang Release
+            cxx: clang++
+            args: -DCMAKE_BUILD_TYPE=Release
+          - name: gcc Debug, ohne AVX2
+            cxx: g++
+            args: -DCMAKE_BUILD_TYPE=Debug -DSKULL_ENABLE_AVX2=OFF
+          - name: gcc Sanitizer
+            cxx: g++
+            args: -DCMAKE_BUILD_TYPE=Debug -DSKULL_SANITIZE=ON
+    steps:
+      - uses: actions/checkout@v4
+      - name: Konfigurieren
+        run: cmake -S . -B build -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} ${{ matrix.args }}
+      - name: Bauen
+        run: cmake --build build -j2
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure -j2
+
+  # Der Weg aus der README: build.sh / build.bat muessen auf frischen Systemen funktionieren
+  build-script:
+    name: ${{ matrix.os }} (build-Skript)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: build.sh --test
+        run: ./build.sh --test
+      - name: Beispiel ausfuehren
+        run: ./build/skull examples/hello.skull
+
+  windows:
+    name: Windows (build.bat)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build.bat --test
+        shell: cmd
+        run: build.bat --test
+      - name: Beispiel ausfuehren
+        shell: cmd
+        run: build\skull.exe examples\hello.skull
