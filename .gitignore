@@ -42,3 +42,6 @@ desktop.ini
 
 # CMake/Skull build output
 build/
+
+# Arbeitskopien paralleler Hilfsagenten (nie einchecken)
+.claude/worktrees/
