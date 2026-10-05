@@ -119,7 +119,8 @@ mittel“ behauptet, hat es nicht gemessen.
   größeren Modellen verschiebt (in der Literatur oft als „Chinchilla-Regel“ beschrieben); Experiment 04 hat das
   danach gemessen (siehe unten).
 - Dass `rate 0.003` für alle Größen passt. Große Modelle brauchen oft eine kleinere Lernrate; ein Teil ihres
-  Rückstands kann daran liegen.
+  Rückstands kann daran liegen. (Experiment 05 hat das geprüft: bei dieser Rechenmenge ist 0.003 für alle sechs
+  Größen die beste getestete Rate.)
 - Dass „gleiche Rechenmenge“ gleich viel Zeit heißt: die Spalte „Sekunden“ streut von 46 bis 72, weil kleine
   Matrizen schlechter ausgelastet werden und die Validierung pro Epoche mitläuft. Bei *gleicher Zeit* bekämen
   die großen Modelle etwas mehr Training; die große Lücke (`groß`, `breit`) würde das nicht schließen.
@@ -157,9 +158,38 @@ Rechenmenge (Vermutung, nicht gemessen).
   viel mehr Text ließe sich die Frage sauberer beantworten.
 - Die Lernrate war für alle gleich (0.003), es gab nur einen Seed, und das Ergebnis gilt für dieses Modellschema.
 
+### 05 Lernrate je Modellgröße (Rechenmenge wie 03, `seed 1`)
+
+Gemessen auf Pauls Rechner. Die Gegenprobe ist bestanden: die Spalte `0.003` stimmt Zahl für Zahl mit Experiment 03
+überein.
+
+| Modell | Parameter | 0.0005 | 0.001 | **0.003** | 0.01 | 0.02 |
+|---|---|---|---|---|---|---|
+| winzig | 31 072 | 2.0733 | 2.0005 | **1.9584** | 1.9749 | 1.9965 |
+| klein | 43 648 | 2.1093 | 1.9648 | **1.8874** | 1.9088 | 2.4080 |
+| mittel | 136 448 | 2.2616 | 2.0638 | **1.9212** | 2.2260 | 2.4585 |
+| tief | 235 904 | 2.3672 | 2.2183 | **2.0065** | 2.2843 | 2.4623 |
+| breit | 469 504 | 2.4083 | 2.2620 | **2.2178** | 2.4797 | 2.6094 |
+| groß | 865 024 | 2.5115 | 2.4426 | **2.4001** | 2.5051 | 2.6656 |
+
+**Was belastbar ist:** Für **alle sechs Größen** ist 0.003 die beste der fünf getesteten Raten. Kein Modell gewinnt durch eine
+eigene Rate etwas; die Rangfolge der Modelle (`klein` vorn) bleibt dieselbe. Der Rückstand der großen Modelle in
+Experiment 03 liegt also **nicht** an der festen Lernrate. Die Vermutung „große Modelle brauchen eine kleinere
+Rate“ hat sich bei dieser Rechenmenge nicht bestätigt.
+
+**Eine Tendenz, die man sehen kann, aber nicht belegen:** Bei den kleinen Modellen ist die Kurve flach rund um 0.003 bis 0.01
+(`winzig`: +0.017 bei 0.01), bei den großen Modellen liegen 0.001 und 0.003 dicht beieinander (`groß`: +0.043, `breit`: +0.044,
+beides unter der Rauschgrenze von 0.05). Das Optimum wandert also vielleicht mit der Größe leicht nach unten; mit einem Raster,
+das in Faktor 2 bis 3 springt, und einem Seed ist das nicht zu entscheiden. Selbst wenn es stimmt, ist der mögliche Gewinn
+kleiner als das Rauschen.
+
+**Grenzen:** Gemessen nur bei der kleinen Rechenmenge (1×). Bei 4× (Experiment 04) könnte die Lernrate mehr ausmachen: bei
+längerem Training ist eine kleinere Rate oft besser. Das zu prüfen heißt `basis_epochs = 96` einzusetzen und kostet das
+Vierfache an Zeit. Ein Seed, grobes Raster.
+
 ## Nächste Schritte
 
-Experiment 05 (Skript liegt bereit, Ergebnis folgt): die Lernrate pro Modellgröße einstellen (bisher fest 0.003, bei
-großen Modellen vermutlich zu hoch). Weitere Ideen, die mit dieser Vorlage direkt messbar sind: mehr und größere Texte; weitere Stufen der Rechenmenge, um zu sehen, wie das
+Die Lernrate bei der vierfachen Rechenmenge prüfen (Experiment 05 mit `basis_epochs = 96`). Weitere Ideen, die mit dieser
+Vorlage direkt messbar sind: mehr und größere Texte; weitere Stufen der Rechenmenge, um zu sehen, wie das
 beste Modell mit ihr wächst; `context`, `batch`. Die Fragen zu Attention, Loss-Funktionen und Präzision aus den Notizen
 brauchen erst Änderungen am Modell selbst; die Messlatte oben ist dann der Vergleichswert.
