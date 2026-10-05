@@ -1,0 +1,2 @@
+define model T { dim = 16  context = 8  heads = 2  layers = 1 }
+train T { data = "data/late.txt"  out = "data/val_skip_c.weights"  epochs = 1  val_skip = 8 }

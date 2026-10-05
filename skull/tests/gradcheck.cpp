@@ -156,6 +156,59 @@ static void check_validation() {
     expect(thrown, "Token-ID ausserhalb des Vokabulars wird abgelehnt");
 }
 
+// eval_loss(): Verlust nur ueber die Positionen ab `from` (Validierung mit val_skip)
+static void check_eval_loss(const TransformerConfig& cfg) {
+    std::printf("eval_loss (Verlust ab einer Position)\n");
+    Transformer m = make_model(cfg, 77);
+    const size_t t = cfg.context;
+    std::vector<int> ids, tgt;
+    make_data(cfg, 5, t, ids, tgt);
+    Transformer::Workspace ws;
+    m.forward(ids.data(), t, ws);
+    const double full = m.loss(tgt.data(), t, ws);
+    expect(m.eval_loss(tgt.data(), t, 0, ws) == full, "from = 0 liefert bitgleich dasselbe wie loss()");
+
+    // Unabhaengige Referenz: je Position -log softmax, dann Mittel ab `from`
+    const size_t V = cfg.vocab;
+    auto reference = [&](size_t from) {
+        double total = 0.0;
+        for (size_t i = from; i < t; ++i) {
+            const double* lg = &ws.logits[i * V];
+            double mx = lg[0];
+            for (size_t j = 1; j < V; ++j) mx = std::max(mx, lg[j]);
+            double z = 0.0;
+            for (size_t j = 0; j < V; ++j) z += std::exp(lg[j] - mx);
+            total += -(lg[(size_t)tgt[i]] - mx - std::log(z));
+        }
+        return total / (double)(t - from);
+    };
+    bool ok = true;
+    for (size_t from = 0; from < t; ++from)
+        if (std::fabs(m.eval_loss(tgt.data(), t, from, ws) - reference(from)) > 1e-12) ok = false;
+    expect(ok, "stimmt fuer jedes from mit der unabhaengigen Referenz ueberein (1e-12)");
+
+    // Die Ziele VOR `from` duerfen keinen Einfluss haben
+    const size_t from = t / 2;
+    const double base = m.eval_loss(tgt.data(), t, from, ws);
+    std::vector<int> changed = tgt;
+    for (size_t i = 0; i < from; ++i) changed[i] = (changed[i] + 1) % (int)V;
+    expect(m.eval_loss(changed.data(), t, from, ws) == base, "Ziele vor `from` beeinflussen das Ergebnis nicht");
+    changed = tgt;
+    changed[from] = (changed[from] + 1) % (int)V;
+    expect(m.eval_loss(changed.data(), t, from, ws) != base, "ein Ziel ab `from` veraendert das Ergebnis");
+
+    auto throws = [&](size_t f) {
+        try { m.eval_loss(tgt.data(), t, f, ws); } catch (const std::runtime_error&) { return true; }
+        return false;
+    };
+    expect(throws(t) && throws(t + 3), "from >= t wird abgelehnt");
+    std::vector<int> bad = tgt;
+    bad[t - 1] = (int)V;
+    bool thrown = false;
+    try { m.eval_loss(bad.data(), t, 0, ws); } catch (const std::runtime_error&) { thrown = true; }
+    expect(thrown, "Ziel-ID ausserhalb des Vokabulars wird abgelehnt");
+}
+
 // Mehrere Threads rechnen gleichzeitig mit je eigenem Workspace und Gradientenpuffer auf demselben
 // (nur gelesenen) Modell. Ergebnis muss bitgleich zur sequentiellen Rechnung sein.
 static void check_thread_safety() {
@@ -241,6 +294,7 @@ int main() {
     TransformerConfig d; d.vocab = 11; d.dim = 8; d.context = 6; d.heads = 2; d.layers = 2;
     check_causality(d);
     check_init_loss_and_overfit(d);
+    check_eval_loss(d);
     check_validation();
     check_thread_safety();
     check_kv_cache();

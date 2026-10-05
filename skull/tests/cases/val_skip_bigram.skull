@@ -1,0 +1,2 @@
+define model B { dim = 16 }
+train B { data = "data/late.txt"  out = "data/val_skip_d.weights"  epochs = 1  val_skip = 4 }

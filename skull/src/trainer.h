@@ -117,6 +117,7 @@ struct TrainConfig {
     size_t      heads      = 0;       // nur Transformer (0 = Standard: 2)
     size_t      layers     = 0;       // nur Transformer (0 = Standard: 1)
     double      val        = 0.1;     // Anteil Validierungsdaten (vom Dateiende), 0 = aus
+    size_t      val_skip   = 0;       // nur Transformer: so viele Positionen am Anfang jedes Validierungsfensters nicht zaehlen
     int         patience   = 0;       // Early Stopping nach N Epochen ohne Verbesserung, 0 = aus
     int         threads    = 0;       // nur Transformer: Anzahl Threads (0 = alle Kerne); aendert das Ergebnis nicht
     unsigned    seed       = 42;      // Zufallsstart (Gewichte, Reihenfolge der Trainingsfenster)
@@ -521,8 +522,14 @@ public:
                 const size_t start = wdw * T_;
                 const size_t len = std::min(T_, v.size() - 1 - start);
                 model_.forward(&v[start], len, work_[sl]);
-                sum[sl] += model_.loss(&v[start + 1], len, work_[sl]) * (double)len;
-                cnt[sl] += len;
+                if (cfg_.val_skip == 0) {
+                    sum[sl] += model_.loss(&v[start + 1], len, work_[sl]) * (double)len;
+                    cnt[sl] += len;
+                } else if (len > cfg_.val_skip) {      // die ersten val_skip Positionen haben zu wenig Vorwissen
+                    const size_t counted = len - cfg_.val_skip;
+                    sum[sl] += model_.eval_loss(&v[start + 1], len, cfg_.val_skip, work_[sl]) * (double)counted;
+                    cnt[sl] += counted;
+                }
             }
         });
         double total = 0.0;
@@ -755,6 +762,10 @@ inline TrainResult skull_train(const TrainConfig& cfg) {
                      "ohne context trainiert Skull das Bigram-Modell\n";
     if (cfg.patience > 0 && cfg.val <= 0.0)
         std::cout << "[WARNUNG] 'patience' wirkt nur mit Validierung (val > 0)\n";
+    if (cfg.val_skip > 0 && cfg.context <= 1)
+        std::cout << "[WARNUNG] 'val_skip' wirkt nur mit context > 1 (Transformer) und wird ignoriert\n";
+    if (cfg.val_skip > 0 && cfg.val <= 0.0)
+        std::cout << "[WARNUNG] 'val_skip' wirkt nur mit Validierung (val > 0)\n";
 
     std::cout << "\n";
     std::cout << "========================================\n";
@@ -808,16 +819,33 @@ inline TrainResult skull_train(const TrainConfig& cfg) {
     if (!split.val.empty())
         std::cout << "[Skull] Validierung: " << split.val.size() << " Token (" << (int)(cfg.val * 100.0 + 0.5)
                   << " % vom Dateiende), Training: " << split.train.size() << " Token\n";
+    // val_skip nur mit Transformer und nur wenn validiert wird; sonst wurde oben gewarnt
+    const bool skip_active = cfg.val_skip > 0 && cfg.context > 1 && split.val.size() >= 2;
+    if (skip_active)
+        std::cout << "[Skull] Validierung zaehlt nicht die ersten " << cfg.val_skip
+                  << " Positionen jedes Fensters (val_skip)\n";
 
     const BPETokenizer* bpe = cfg.use_bpe ? &tok_result.bpe : nullptr;
     std::unique_ptr<TrainableModel> model;
     if (cfg.context > 1) {
         TransformerConfig tc = make_transformer_config(cfg, vocab, split.train.size() - 1);
+        if (skip_active) {
+            if (cfg.val_skip >= tc.context)
+                throw std::runtime_error("train: 'val_skip' (" + std::to_string(cfg.val_skip) +
+                                         ") muss kleiner als 'context' (" + std::to_string(tc.context) + ") sein");
+            if (split.val.size() - 1 <= cfg.val_skip)
+                throw std::runtime_error("train: 'val_skip' (" + std::to_string(cfg.val_skip) +
+                                         ") ist zu gross fuer die " + std::to_string(split.val.size()) +
+                                         " Validierungs-Token");
+        }
         model = std::make_unique<TransformerTrainer>(cfg, tc, split.train, bpe);
     } else {
         model = std::make_unique<BigramModel>(cfg, vocab, split.train, bpe);
     }
     model->print_info(ids.size());
 
-    return run_training(cfg, *model, split.val, weights_path_for(cfg), ckpt::hash_ids(split.train, split.val));
+    // val_skip aendert, was der Val-Loss misst: ein Checkpoint darf nicht mit anderem val_skip fortgesetzt werden
+    uint64_t data_hash = ckpt::hash_ids(split.train, split.val);
+    if (skip_active) data_hash = data_hash * 1099511628211ull + (uint64_t)cfg.val_skip;
+    return run_training(cfg, *model, split.val, weights_path_for(cfg), data_hash);
 }

@@ -676,7 +676,7 @@ private:
             for (const auto& f : n->fields) names.push_back({f.name, f.line});
             warn_fields("train", n->model_name, names,
                         {"data", "out", "epochs", "rate", "batch", "dim", "vocab", "steps",
-                         "context", "heads", "layers", "val", "patience", "threads",
+                         "context", "heads", "layers", "val", "val_skip", "patience", "threads",
                          "seed", "checkpoint", "stop_after", "resume",
                          "bpe", "bpe_vocab", "gpu", "prefer_amd"}, {});
             for (const auto& f : n->fields) {
@@ -693,6 +693,7 @@ private:
                 if (f.name == "heads")      cfg.heads      = to_size(val, f.line, "heads");
                 if (f.name == "layers")     cfg.layers     = to_size(val, f.line, "layers");
                 if (f.name == "val")        cfg.val        = val.as_number(f.line);
+                if (f.name == "val_skip")   cfg.val_skip   = to_size(val, f.line, "val_skip");
                 if (f.name == "patience")   cfg.patience   = to_int(val, f.line, "patience");
                 if (f.name == "threads")    cfg.threads    = to_int(val, f.line, "threads");
                 if (f.name == "seed")       cfg.seed       = (unsigned)to_size(val, f.line, "seed");

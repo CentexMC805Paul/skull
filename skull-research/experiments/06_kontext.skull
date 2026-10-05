@@ -1,0 +1,80 @@
+// ============================================================
+//  Experiment 06: Wie viel bringt ein laengerer Kontext?
+//
+//  Frage:    `context` ist die Anzahl Zeichen, die das Modell auf einmal sieht. Wie stark haengt
+//            die Qualitaet davon ab, und wo hoert der Nutzen auf?
+//  Aufbau:   Modell `mittel` (dim 64, 4 Koepfe, 2 Schichten), Rechenmenge wie in Experiment 03
+//            (24 Epochen zu 50 000 Token), nur `context` wird veraendert. Damit die Zahl der Updates
+//            und die Token pro Update gleich bleiben, wird `batch` mitgeaendert:
+//            batch x context = 512 (wie die Messlatte: 8 x 64).
+//  Messung:  Der Val-Loss wird auf Fenstern der Laenge `context` berechnet. Die ersten Zeichen eines
+//            Fensters haben aber kaum Vorwissen, und bei kurzen Fenstern sind das relativ mehr. Das
+//            wuerde grosse Kontexte bevorzugen, ohne dass das Modell sie besser nutzt. Deshalb zwei Zahlen:
+//              "alle Positionen":      der normale Val-Loss
+//              "ab Fenstermitte":      zaehlt nur die zweite Haelfte jedes Fensters (val_skip = context/2),
+//                                      also nur Zeichen mit mindestens context/2 Vorwissen
+//            Der Abstand der beiden Spalten zeigt, wie gross der Messeffekt ist.
+//
+//  Starten (im Ordner skull/, dort liegt auch shakespeare.txt):
+//      ./build/skull ../skull-research/experiments/06_kontext.skull
+//  Dauer: 14 Laeufe; etwa so lang wie Experiment 03 mal zwei bis drei (siehe README).
+// ============================================================
+
+// ---- Einstellungen: hier aendern ----
+define daten    = "shakespeare.txt"
+define seed     = 1
+define lernrate = 0.003
+define epochs   = 24
+define fenster  = 50000        // Token pro Epoche
+define token_pro_update = 512  // batch x context
+define kontexte = [4, 8, 16, 32, 64, 128, 256]
+
+define func pad(text, breite) {
+    zeile = str(text)
+    while len(zeile) < breite { zeile = zeile + " " }
+    return zeile
+}
+define func runde(x, stellen) {
+    faktor = pow(10, stellen)
+    return round(x * faktor) / faktor
+}
+
+define model Mini { dim = 64  heads = 4  layers = 2 }
+define ergebnisse = []
+
+for c in kontexte {
+    b = token_pro_update / c
+
+    // Messung 1: normaler Val-Loss (alle Positionen jedes Fensters)
+    train Mini {
+        data = daten  out = "experiment.weights"  epochs = epochs  steps = fenster
+        context = c  batch = b  rate = lernrate  seed = seed
+    }
+    alle = last_val_loss()
+
+    // Messung 2: derselbe Lauf, aber nur die zweite Haelfte jedes Fensters zaehlt
+    train Mini {
+        data = daten  out = "experiment.weights"  epochs = epochs  steps = fenster
+        context = c  batch = b  rate = lernrate  seed = seed  val_skip = c / 2
+    }
+    push(ergebnisse, [c, last_params(), b, alle, last_val_loss(), last_seconds()])
+    print("-> context", c, ": alle Positionen", runde(alle, 4), ", ab Fenstermitte", runde(last_val_loss(), 4))
+}
+
+// ---- Tabelle ----
+print("")
+print("==================== ERGEBNIS: Kontextlaenge ====================")
+print(pad("Kontext", 9) + pad("Parameter", 11) + pad("batch", 7) + pad("alle Positionen", 17) + pad("ab Fenstermitte", 17) + "Sekunden")
+beste_alle = ergebnisse[0]
+beste_mitte = ergebnisse[0]
+for z in ergebnisse {
+    if z[3] < beste_alle[3] { beste_alle = z }
+    if z[4] < beste_mitte[4] { beste_mitte = z }
+    print(pad(z[0], 9) + pad(z[1], 11) + pad(z[2], 7) + pad(runde(z[3], 4), 17) + pad(runde(z[4], 4), 17) + str(runde(z[5], 1)))
+}
+print("")
+print("Bester Kontext nach 'alle Positionen':  ", beste_alle[0], "(Val-Loss", runde(beste_alle[3], 4) + ")")
+print("Bester Kontext nach 'ab Fenstermitte':  ", beste_mitte[0], "(Val-Loss", runde(beste_mitte[4], 4) + ")")
+print("")
+print("Zum Einordnen: Seed-Rauschen ist etwa 0.03 (Experiment 02), Unterschiede unter 0.05 sind nicht belastbar.")
+print("Die Kontextlaenge ist hier durch die Trainingsdaten (1,1 MB Shakespeare) und die kleine Modellbreite begrenzt.")

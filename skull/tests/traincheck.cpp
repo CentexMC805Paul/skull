@@ -262,6 +262,56 @@ static std::string real_data_file() {
     return path;
 }
 
+// val_skip: evaluate() zaehlt nur die Positionen ab val_skip jedes Fensters. Referenz: unabhaengige
+// Rechnung aus den Logits (je Position -log softmax), inklusive des kuerzeren letzten Fensters.
+static void check_val_skip_evaluate() {
+    std::printf("val_skip: Validierung zaehlt nur Positionen ab val_skip\n");
+    TransformerConfig tc; tc.vocab = 12; tc.dim = 8; tc.context = 6; tc.heads = 2; tc.layers = 1;
+    std::mt19937 g(5);
+    std::vector<int> train(200), val(41);        // 41 Token = 40 Paare: 6 Fenster zu 6 und ein Fenster mit 4
+    for (auto& x : train) x = (int)(g() % 12);
+    for (auto& x : val)   x = (int)(g() % 12);
+    bool all_ok = true;
+    double previous = -1.0;
+    bool differ = true;
+    for (size_t skip : {0, 1, 3, 5}) {
+        TrainConfig cfg;
+        cfg.context = 6; cfg.dim = 8; cfg.vocab = 12; cfg.heads = 2; cfg.layers = 1;
+        cfg.batch = 2; cfg.epochs = 1; cfg.threads = 2; cfg.val_skip = skip;
+        TransformerTrainer tr(cfg, tc, train, nullptr);
+        const double got = tr.evaluate(val);
+
+        SkullWeights w = tr.export_weights();
+        Transformer m(tc);
+        m.params = w.tparams;
+        Transformer::Workspace ws;
+        double total = 0.0;
+        size_t count = 0;
+        for (size_t start = 0; start + 1 < val.size(); start += tc.context) {
+            const size_t len = std::min<size_t>(tc.context, val.size() - 1 - start);
+            m.forward(&val[start], len, ws);
+            for (size_t i = skip; i < len; ++i) {
+                const double* lg = &ws.logits[i * tc.vocab];
+                double mx = lg[0];
+                for (size_t j = 1; j < tc.vocab; ++j) mx = std::max(mx, lg[j]);
+                double z = 0.0;
+                for (size_t j = 0; j < tc.vocab; ++j) z += std::exp(lg[j] - mx);
+                total += -(lg[(size_t)val[start + 1 + i]] - mx - std::log(z));
+                ++count;
+            }
+        }
+        const double ref = total / (double)count;
+        if (!(std::fabs(got - ref) < 1e-12)) {
+            all_ok = false;
+            std::printf("    skip %zu: evaluate %.15g, Referenz %.15g (%zu Positionen)\n", skip, got, ref, count);
+        }
+        if (skip > 0 && got == previous) differ = false;
+        previous = got;
+    }
+    expect(all_ok, "evaluate() stimmt fuer val_skip = 0, 1, 3, 5 mit der unabhaengigen Referenz ueberein (1e-12)");
+    expect(differ, "verschiedene val_skip-Werte liefern verschiedene Werte (die Option wirkt)");
+}
+
 static void check_resume_real_models() {
     std::printf("Pausieren + Fortsetzen == durchgehender Lauf (echte Modelle, bitgleich)\n");
     const std::string data = real_data_file();
@@ -431,6 +481,7 @@ int main() {
     check_adam_chunks();
     check_trainer_threads();
     check_checkpoints_mock();
+    check_val_skip_evaluate();
     check_resume_real_models();
 
     if (failures) { std::printf("\n%d Pruefung(en) fehlgeschlagen\n", failures); return 1; }

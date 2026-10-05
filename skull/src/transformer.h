@@ -135,6 +135,11 @@ public:
     // legt d(Verlust)/d(Logits) in ws ab.
     double loss(const int* targets, size_t t, Workspace& ws) const;
 
+    // Mittlere Kreuzentropie NUR ueber die Positionen from..t-1 (reine Auswertung, kein Gradient).
+    // Mit from = 0 liefert es bitgleich dasselbe wie loss(). Damit laesst sich die Validierung auf die
+    // Positionen beschraenken, die schon genug Vorwissen im Fenster haben (siehe train-Feld val_skip).
+    double eval_loss(const int* targets, size_t t, size_t from, const Workspace& ws) const;
+
     // Rueckwaerts: ADDIERT d(Verlust)/d(params) auf g (Vektor der Laenge param_count()).
     // Nur nach forward() + loss() mit demselben ws.
     void backward(const int* ids, size_t t, Workspace& ws, double* g) const;
@@ -440,6 +445,26 @@ inline double Transformer::loss(const int* targets, size_t t, Workspace& ws) con
         for (size_t j = 0; j < V; ++j) dl[j] /= (double)t;     // Mittel ueber Positionen
     }
     return total / (double)t;
+}
+
+inline double Transformer::eval_loss(const int* targets, size_t t, size_t from, const Workspace& ws) const {
+    const size_t V = cfg.vocab;
+    if (t != ws.t_cur) throw std::runtime_error("transformer: eval_loss() ohne passendes forward()");
+    if (from >= t) throw std::runtime_error("transformer: eval_loss(): from muss kleiner als t sein");
+    std::vector<double> p(V);
+    double total = 0.0;
+    for (size_t i = from; i < t; ++i) {
+        if (targets[i] < 0 || (size_t)targets[i] >= V)
+            throw std::runtime_error("transformer: Ziel-ID " + std::to_string(targets[i]) +
+                                     " ausserhalb des Vokabulars");
+        const double* lg = &ws.logits[i * V];
+        double maxv = *std::max_element(lg, lg + V);
+        double sum = 0.0;
+        for (size_t j = 0; j < V; ++j) { p[j] = std::exp(lg[j] - maxv); sum += p[j]; }
+        for (size_t j = 0; j < V; ++j) p[j] /= sum;
+        total += -std::log(std::max(p[(size_t)targets[i]], 1e-300));
+    }
+    return total / (double)(t - from);
 }
 
 inline void Transformer::backward(const int* ids, size_t t, Workspace& ws, double* g) const {

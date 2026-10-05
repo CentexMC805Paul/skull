@@ -1,0 +1,12 @@
+// val_skip: die ersten Positionen jedes Validierungsfensters zaehlen nicht (mehr Vorwissen im Fenster)
+define model T { dim = 16  context = 16  heads = 2  layers = 1 }
+train T { data = "data/late.txt"  out = "data/val_skip_a.weights"  epochs = 3  rate = 0.01  seed = 4 }
+define ohne = last_val_loss()
+train T { data = "data/late.txt"  out = "data/val_skip_b.weights"  epochs = 3  rate = 0.01  seed = 4  val_skip = 8 }
+define mit = last_val_loss()
+// Das Training selbst ist gleich; nur die Messung des Val-Loss aendert sich
+if ohne != mit and mit > 0 and ohne > 0 {
+    print("SKIP OK")
+} else {
+    print("SKIP FALSCH:", ohne, mit)
+}

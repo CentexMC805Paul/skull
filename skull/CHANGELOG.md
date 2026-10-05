@@ -91,6 +91,13 @@ Measured on Tiny Shakespeare (1.1 MB), dim 64, 2 layers, 4 heads, context 64, ba
 
 ### 🔬 Added (experiments)
 
+- `train { val_skip = N }` (transformer only): the first N positions of every validation window do not count
+  towards the validation loss (`Transformer::eval_loss`). The validation loss is averaged over windows of
+  `context` tokens, whose first positions have little to go on, and that penalises short contexts more. When
+  comparing different `context` values, `val_skip = context / 2` measures only positions with at least half the
+  context. Default 0: all earlier numbers are unchanged (checked: 5-epoch Shakespeare run identical). Tested
+  against an independent per-position reference, including the shorter last window; four injected bugs were
+  caught. A checkpoint cannot be resumed with a different `val_skip`.
 - Builtins `last_seconds()` (computation time of the epochs in the last `train`) and `last_params()` (number of
   trainable parameters), next to `last_loss()`, `last_val_loss()`, `last_best_epoch()`: enough to write
   measurement series in Skull itself. `skull-research/experiments/` holds the first two (learning-rate sweep and
