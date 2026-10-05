@@ -1,0 +1,108 @@
+// ============================================================
+//  Experiment 05: Braucht jede Modellgroesse ihre eigene Lernrate?
+//
+//  Frage:    In den Experimenten 03 und 04 war die Lernrate fuer alle Modelle gleich (0.003).
+//            Liegt ein Teil des Rueckstands grosser Modelle nur daran, dass 0.003 fuer sie nicht
+//            passt? Aendert sich dadurch, welches Modell das beste ist?
+//  Aufbau:   Dieselben sechs Modelle und dieselbe Rechenmenge wie in Experiment 03
+//            (`basis_epochs = 24`); jedes Modell wird mit jeder Lernrate aus `raten` trainiert.
+//            Die Spalte mit rate 0.003 muss genau die Zahlen aus Experiment 03 liefern.
+//  Ergebnis: Tabelle Modell x Lernrate, die beste Rate je Modell und was die Einstellung
+//            gegenueber der festen Rate 0.003 bringt.
+//
+//  Starten (im Ordner skull/, dort liegt auch shakespeare.txt):
+//      ./build/skull ../skull-research/experiments/05_lernrate_pro_groesse.skull
+//  Dauer: fuenfmal so lang wie Experiment 03 (siehe README).
+// ============================================================
+
+// ---- Einstellungen: hier aendern ----
+define daten    = "shakespeare.txt"
+define seed     = 1
+define raten    = [0.0005, 0.001, 0.003, 0.01, 0.02]
+define referenz = 0.003        // die bisher feste Rate
+define fenster  = 50000        // Token pro Epoche
+define basis_epochs = 24       // wie Experiment 03 (4x Rechenmenge: 96, wie Experiment 04)
+define basis_params = 136448   // Parameter der Messlatte (dim 64, 2 Schichten)
+// Name, dim, Koepfe, Schichten
+define konfigs = [
+    ["winzig", 32, 2, 1],
+    ["klein",  32, 2, 2],
+    ["mittel", 64, 4, 2],
+    ["tief",   64, 4, 4],
+    ["breit",  128, 4, 2],
+    ["gross",  128, 4, 4],
+]
+
+define func pad(text, breite) {
+    zeile = str(text)
+    while len(zeile) < breite { zeile = zeile + " " }
+    return zeile
+}
+define func runde(x, stellen) {
+    faktor = pow(10, stellen)
+    return round(x * faktor) / faktor
+}
+
+define model Mini { context = 64 }
+define zeilen = []
+
+for k in konfigs {
+    // Parameterzahl ermitteln (winziger Probelauf) und Epochen fuer gleiche Rechenmenge waehlen
+    train Mini {
+        data = daten  out = "experiment.weights"  epochs = 1  steps = 64
+        dim = k[1]  heads = k[2]  layers = k[3]  seed = seed
+    }
+    p = last_params()
+    ep = round(basis_epochs * basis_params / p)
+    if ep < 1 { ep = 1 }
+
+    werte = []
+    for r in raten {
+        train Mini {
+            data = daten  out = "experiment.weights"  epochs = ep  steps = fenster
+            dim = k[1]  heads = k[2]  layers = k[3]  rate = r  batch = 8  seed = seed
+        }
+        push(werte, last_val_loss())
+        print("->", k[0], ", rate", r, ": Val-Loss", runde(last_val_loss(), 4))
+    }
+    push(zeilen, [k[0], p, ep, werte])
+}
+
+// ---- Auswertung ----
+print("")
+print("==================== ERGEBNIS: Lernrate je Modellgroesse ====================")
+kopf = pad("Modell", 9) + pad("Parameter", 11) + pad("Epochen", 9)
+for r in raten { kopf = kopf + pad("rate " + str(r), 13) }
+print(kopf + "beste Rate")
+
+gesamt_name = ""
+gesamt_wert = 1000000
+gesamt_ref_name = ""
+gesamt_ref_wert = 1000000
+gewinne = []
+for z in zeilen {
+    werte = z[3]
+    bester = 0
+    ref_wert = werte[0]
+    for i in 0..(len(werte) - 1) {
+        if werte[i] < werte[bester] { bester = i }
+        if raten[i] == referenz { ref_wert = werte[i] }
+    }
+    zeile = pad(z[0], 9) + pad(z[1], 11) + pad(z[2], 9)
+    for w in werte { zeile = zeile + pad(runde(w, 4), 13) }
+    marke = ""
+    if bester == 0 or bester == len(raten) - 1 { marke = "   (am Rand der Liste, weiter testen!)" }
+    print(zeile + str(raten[bester]) + marke)
+    push(gewinne, [z[0], raten[bester], ref_wert - werte[bester]])
+    if werte[bester] < gesamt_wert { gesamt_wert = werte[bester]  gesamt_name = z[0] }
+    if ref_wert < gesamt_ref_wert { gesamt_ref_wert = ref_wert  gesamt_ref_name = z[0] }
+}
+
+print("")
+print("Gewinn durch die passende Rate gegenueber rate " + str(referenz) + " (Val-Loss, groesser = mehr gewonnen):")
+for g in gewinne { print("  " + pad(g[0], 9) + "beste Rate " + pad(g[1], 8) + "Gewinn " + str(runde(g[2], 4))) }
+print("")
+print("Bestes Modell mit fester Rate " + str(referenz) + ":  " + gesamt_ref_name + " (Val-Loss " + str(runde(gesamt_ref_wert, 4)) + ")")
+print("Bestes Modell mit eigener Rate:      " + gesamt_name + " (Val-Loss " + str(runde(gesamt_wert, 4)) + ")")
+print("")
+print("Zum Einordnen: Seed-Rauschen ist etwa 0.03 (Experiment 02), Unterschiede unter 0.05 sind nicht belastbar.")

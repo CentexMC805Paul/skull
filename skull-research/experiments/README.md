@@ -159,7 +159,7 @@ Rechenmenge (Vermutung, nicht gemessen).
 
 ## Nächste Schritte
 
-Ideen, die mit dieser Vorlage direkt messbar sind: die Lernrate pro Modellgröße einstellen (bisher fest 0.003, bei
-großen Modellen vermutlich zu hoch); mehr und größere Texte; weitere Stufen der Rechenmenge, um zu sehen, wie das
+Experiment 05 (Skript liegt bereit, Ergebnis folgt): die Lernrate pro Modellgröße einstellen (bisher fest 0.003, bei
+großen Modellen vermutlich zu hoch). Weitere Ideen, die mit dieser Vorlage direkt messbar sind: mehr und größere Texte; weitere Stufen der Rechenmenge, um zu sehen, wie das
 beste Modell mit ihr wächst; `context`, `batch`. Die Fragen zu Attention, Loss-Funktionen und Präzision aus den Notizen
 brauchen erst Änderungen am Modell selbst; die Messlatte oben ist dann der Vergleichswert.
