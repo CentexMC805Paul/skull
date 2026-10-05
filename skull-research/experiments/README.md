@@ -188,6 +188,45 @@ kleiner als das Rauschen.
 längerem Training ist eine kleinere Rate oft besser. Das zu prüfen heißt `basis_epochs = 96` einzusetzen und kostet das
 Vierfache an Zeit. Ein Seed, grobes Raster.
 
+### 06 Kontextlänge (Modell `mittel`, 24 Epochen × 50 000 Token, `batch × context = 512`, `seed 1`, `rate 0.003`)
+
+Gemessen auf meinem Rechner (4 Kerne). Die Gegenprobe ist bestanden: bei `context 64` und „alle Positionen“ kommt
+exakt der Wert von `mittel` aus Experiment 03 heraus (1.9212). Bestätigung auf Pauls Rechner: folgt.
+
+| Kontext | Parameter | batch | Val-Loss, alle Positionen | Val-Loss, ab Fenstermitte | Messeffekt |
+|---|---|---|---|---|---|
+| 4 | 132 608 | 128 | 2.1001 | 1.9145 | 0.186 |
+| 8 | 132 864 | 64 | 1.9743 | **1.8455** | 0.129 |
+| 16 | 133 376 | 32 | 1.9121 | **1.8460** | 0.066 |
+| 32 | 134 400 | 16 | **1.8926** | **1.8417** | 0.051 |
+| 64 | 136 448 | 8 | 1.9212 | 1.8985 | 0.023 |
+| 128 | 140 544 | 4 | 2.0622 | 2.0404 | 0.022 |
+| 256 | 148 736 | 2 | 2.3637 | 2.3779 | −0.014 |
+
+Der **Messeffekt** ist der Unterschied der beiden Spalten. „Ab Fenstermitte“ zählt nur die zweite Hälfte jedes
+Fensters (`val_skip = context / 2`), also nur Zeichen mit mindestens `context / 2` Vorwissen.
+
+**Was belastbar ist:**
+- **Die normale Messung ist für kurze Kontexte unfair.** Bei `context 4` ist sie um 0.19 schlechter als die faire,
+  bei `context 8` um 0.13. Wer nur die normale Spalte liest, hält 8 für deutlich schlechter als 32 (+0.082); in der
+  fairen Spalte ist der Unterschied 0.004, also keiner. Das ist der Grund, warum `val_skip` existiert.
+- **Lange Kontexte schaden hier.** Ab `context 128` wird es deutlich schlechter (+0.20 bzw. +0.54 gegenüber dem
+  Besten, fair gemessen), und `256` braucht mit 142 s fast doppelt so lange wie die anderen (66 bis 79 s), weil
+  Attention mit der Länge teurer wird und bei `batch 2` weniger Rechenkerne beschäftigt sind.
+- **Der beste Bereich liegt bei 8 bis 32 Zeichen** (fair gemessen alle gleich gut, Unterschiede unter 0.005). `4` ist
+  mit +0.07 leicht schlechter, `64` mit +0.057 ebenfalls knapp über der Rauschgrenze von etwa 0.05.
+
+**Was nicht belastbar ist:** Welcher Kontext zwischen 8 und 32 der beste ist. Das sind Unterschiede im Rauschen.
+
+**Was dieser Versuch nicht sagt:**
+- Dass lange Kontexte grundsätzlich nichts bringen. Hier ist die Trainingsmenge klein (rund 2 350 Updates), und ein
+  Modell mit mehr Positionen hat mehr zu lernen (mehr Positions-Einbettungen, Attention über längere Strecken). Mit
+  mehr Training, mehr Text oder einem breiteren Modell könnte der Nutzen langer Kontexte erscheinen. Auch Shakespeare auf
+  Zeichenebene hängt vor allem von den letzten Zeichen ab (Wörter, Zeilenanfänge); bei anderen Daten kann das anders sein.
+- Wie es bei gleicher *Zeit* statt gleicher Token aussieht. Lange Kontexte kosten mehr Rechenzeit pro Token; bei gleicher
+  Zeit stünden sie noch schlechter da.
+- Nur ein Seed, nur `mittel`, `rate 0.003`.
+
 ## Nächste Schritte
 
 Die Lernrate bei der vierfachen Rechenmenge prüfen (Experiment 05 mit `basis_epochs = 96`). Weitere Ideen, die mit dieser
