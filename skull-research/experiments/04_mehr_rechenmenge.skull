@@ -1,0 +1,79 @@
+// ============================================================
+//  Experiment 04: Wandert das beste Modell, wenn man mehr Rechenmenge hat?
+//
+//  Frage:    Experiment 03 fand bei kleiner Rechenmenge (24 Epochen fuer die Messlatte) ein kleines
+//            Modell am besten. Gilt das auch bei vierfacher Rechenmenge, oder wird dann ein groesseres
+//            Modell besser?
+//  Aufbau:   Exakt Experiment 03, nur mit `basis_epochs = 96` statt 24. Alles andere ist gleich,
+//            damit die beiden Tabellen direkt vergleichbar sind.
+//  Dauer:    Etwa 4x so lang wie Experiment 03 (siehe README).
+//
+//  Starten (im Ordner skull/, dort liegt auch shakespeare.txt):
+//      ./build/skull ../skull-research/experiments/04_mehr_rechenmenge.skull
+// ============================================================
+
+// ---- Einstellungen: hier aendern ----
+define daten    = "shakespeare.txt"
+define seed     = 1
+define lernrate = 0.003
+define fenster  = 50000        // Token pro Epoche, fuer alle gleich
+define basis_epochs = 96       // Epochen der Messlatte (Experiment 03: 24)
+define basis_params = 136448   // Parameter der Messlatte (dim 64, 2 Schichten)
+// Name, dim, Koepfe, Schichten
+define konfigs = [
+    ["winzig", 32, 2, 1],
+    ["klein",  32, 2, 2],
+    ["mittel", 64, 4, 2],
+    ["tief",   64, 4, 4],
+    ["breit",  128, 4, 2],
+    ["gross",  128, 4, 4],
+]
+
+define func pad(text, breite) {
+    zeile = str(text)
+    while len(zeile) < breite { zeile = zeile + " " }
+    return zeile
+}
+define func runde(x, stellen) {
+    faktor = pow(10, stellen)
+    return round(x * faktor) / faktor
+}
+
+define model Mini { context = 64 }
+define ergebnisse = []
+
+for k in konfigs {
+    // 1. Parameterzahl ermitteln (ein winziger Probelauf; Ergebnis wird nicht benutzt)
+    train Mini {
+        data = daten  out = "experiment.weights"  epochs = 1  steps = 64
+        dim = k[1]  heads = k[2]  layers = k[3]  seed = seed
+    }
+    p = last_params()
+
+    // 2. Epochen so waehlen, dass (Epochen x Parameter) der Messlatte entspricht
+    ep = round(basis_epochs * basis_params / p)
+    if ep < 1 { ep = 1 }
+
+    // 3. Eigentliches Training
+    train Mini {
+        data = daten  out = "experiment.weights"  epochs = ep  steps = fenster
+        dim = k[1]  heads = k[2]  layers = k[3]  rate = lernrate  batch = 8  seed = seed
+    }
+    rechnung = ep * p / (basis_epochs * basis_params)
+    push(ergebnisse, [k[0], p, ep, last_val_loss(), last_loss(), last_seconds(), rechnung])
+    print("->", k[0], ":", p, "Parameter,", ep, "Epochen, Val-Loss", runde(last_val_loss(), 4))
+}
+
+// ---- Tabelle ----
+print("")
+print("==================== ERGEBNIS: Modellgroesse bei vierfacher Rechenmenge ====================")
+print(pad("Modell", 9) + pad("Parameter", 11) + pad("Epochen", 9) + pad("Val-Loss", 10) + pad("Train-Loss", 12) + pad("Sekunden", 10) + "Rechenmenge")
+beste = ergebnisse[0]
+for z in ergebnisse {
+    if z[3] < beste[3] { beste = z }
+    print(pad(z[0], 9) + pad(z[1], 11) + pad(z[2], 9) + pad(runde(z[3], 4), 10) + pad(runde(z[4], 4), 12) + pad(runde(z[5], 1), 10) + str(runde(z[6], 2)) + "x")
+}
+print("")
+print("Bestes Modell:", beste[0], "mit Val-Loss", runde(beste[3], 4))
+print("Zum Einordnen: Seed-Rauschen ist etwa 0.03 (Experiment 02), Unterschiede unter 0.05 sind nicht belastbar.")
+print("Die Lernrate war fuer alle gleich; fuer sehr grosse oder sehr kleine Modelle koennte eine andere besser sein.")
