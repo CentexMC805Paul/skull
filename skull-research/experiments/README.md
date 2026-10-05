@@ -128,7 +128,8 @@ mittel“ behauptet, hat es nicht gemessen.
 
 ### 04 Dieselbe Frage bei vierfacher Rechenmenge (`basis_epochs = 96`, sonst wie 03)
 
-Gemessen auf Pauls Rechner (16 Kerne, 8 Threads). Bestätigung auf einem zweiten Rechner: siehe unten.
+Gemessen auf Pauls Rechner (16 Kerne, 8 Threads) und auf einem zweiten (4 Kerne) wiederholt: Val- und Train-Loss
+sind in allen sechs Zeilen identisch.
 
 | Modell | Parameter | Epochen | Val-Loss 1× (03) | Val-Loss 4× (04) | Änderung |
 |---|---|---|---|---|---|
