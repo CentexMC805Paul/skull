@@ -92,8 +92,42 @@ Val-Loss 2.1936, 2.1793, 2.1966, 2.1356, 2.1994. Mittelwert **2.181**, Standarda
 Spannweite **0.064**. Faustregel: Unterschiede unter etwa **0.05** sind bei diesem Aufbau Rauschen.
 Mit nur fünf Seeds ist selbst die Streuung ungenau; für knappe Entscheidungen mehr Seeds verwenden.
 
+### 03 Modellgröße bei gleicher Rechenmenge (`seed 1`, `rate 0.003`, 50 000 Token pro Epoche)
+
+Rechenmenge = Token × Parameter, für alle gleich (so viel wie die Messlatte `mittel` mit 24 Epochen, das sind
+rund 1,2 Millionen gesehene Token). Kleinere Modelle bekommen entsprechend mehr Epochen.
+
+| Modell | dim / Schichten | Parameter | Epochen | Val-Loss | Sekunden (4 Kerne) |
+|---|---|---|---|---|---|
+| winzig | 32 / 1 | 31 072 | 105 | 1.9584 | 67 |
+| **klein** | 32 / 2 | 43 648 | 75 | **1.8874** | 72 |
+| mittel | 64 / 2 | 136 448 | 24 | 1.9212 | 54 |
+| tief | 64 / 4 | 235 904 | 14 | 2.0065 | 62 |
+| breit | 128 / 2 | 469 504 | 7 | 2.2178 | 46 |
+| groß | 128 / 4 | 865 024 | 4 | 2.4001 | 55 |
+
+**Was belastbar ist** (Unterschied über der Streuung von etwa 0.03 bis 0.05): Bei diesem kleinen Budget sind
+Modelle ab etwa 235 000 Parametern deutlich schlechter, und zwar umso mehr, je größer sie sind (+0.12 bis
++0.51 gegenüber `klein`). Sie sehen zu wenige Token pro Parameter: `groß` hat in 4 Epochen nur etwa 0,2 Token
+je Parameter gesehen, `mittel` rund 9. Auch `winzig` ist schlechter als `klein` (+0.07).
+
+**Was nicht belastbar ist:** `klein` gegen `mittel` (0.034 Unterschied, im Rauschen). Wer „klein ist besser als
+mittel“ behauptet, hat es nicht gemessen.
+
+**Was dieser Versuch nicht sagt:**
+- Dass es bei mehr Rechenmenge so bleibt. Die Vermutung ist, dass sich das Optimum mit mehr Rechenmenge zu
+  größeren Modellen verschiebt (in der Literatur oft als „Chinchilla-Regel“ beschrieben); das messen wir erst,
+  wenn wir die Rechenmenge vervielfachen.
+- Dass `rate 0.003` für alle Größen passt. Große Modelle brauchen oft eine kleinere Lernrate; ein Teil ihres
+  Rückstands kann daran liegen.
+- Dass „gleiche Rechenmenge“ gleich viel Zeit heißt: die Spalte „Sekunden“ streut von 46 bis 72, weil kleine
+  Matrizen schlechter ausgelastet werden und die Validierung pro Epoche mitläuft. Bei *gleicher Zeit* bekämen
+  die großen Modelle etwas mehr Training; die große Lücke (`groß`, `breit`) würde das nicht schließen.
+- Nur ein Seed pro Modell.
+
 ## Nächste Schritte
 
-Ideen, die mit dieser Vorlage direkt messbar sind: Modellgröße (`dim`, `layers`) bei gleicher Zeit, `context`,
-`batch`, die Länge des Trainings. Die Fragen zu Attention, Loss-Funktionen und Präzision aus den Notizen
+Ideen, die mit dieser Vorlage direkt messbar sind: Experiment 03 mit vervielfachter Rechenmenge
+(`basis_epochs` erhöhen) wiederholen und sehen, ob das Optimum zu größeren Modellen wandert; die Lernrate pro
+Modellgröße einstellen; `context`, `batch`. Die Fragen zu Attention, Loss-Funktionen und Präzision aus den Notizen
 brauchen erst Änderungen am Modell selbst; die Messlatte oben ist dann der Vergleichswert.
