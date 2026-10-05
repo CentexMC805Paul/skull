@@ -115,9 +115,9 @@ je Parameter gesehen, `mittel` rund 9. Auch `winzig` ist schlechter als `klein` 
 mittel“ behauptet, hat es nicht gemessen.
 
 **Was dieser Versuch nicht sagt:**
-- Dass es bei mehr Rechenmenge so bleibt. Die Vermutung ist, dass sich das Optimum mit mehr Rechenmenge zu
-  größeren Modellen verschiebt (in der Literatur oft als „Chinchilla-Regel“ beschrieben); das messen wir erst,
-  wenn wir die Rechenmenge vervielfachen.
+- Dass es bei mehr Rechenmenge so bleibt. Die Vermutung war, dass sich das Optimum mit mehr Rechenmenge zu
+  größeren Modellen verschiebt (in der Literatur oft als „Chinchilla-Regel“ beschrieben); Experiment 04 hat das
+  danach gemessen (siehe unten).
 - Dass `rate 0.003` für alle Größen passt. Große Modelle brauchen oft eine kleinere Lernrate; ein Teil ihres
   Rückstands kann daran liegen.
 - Dass „gleiche Rechenmenge“ gleich viel Zeit heißt: die Spalte „Sekunden“ streut von 46 bis 72, weil kleine
@@ -125,9 +125,41 @@ mittel“ behauptet, hat es nicht gemessen.
   die großen Modelle etwas mehr Training; die große Lücke (`groß`, `breit`) würde das nicht schließen.
 - Nur ein Seed pro Modell.
 
+### 04 Dieselbe Frage bei vierfacher Rechenmenge (`basis_epochs = 96`, sonst wie 03)
+
+Gemessen auf Pauls Rechner (16 Kerne, 8 Threads). Bestätigung auf einem zweiten Rechner: siehe unten.
+
+| Modell | Parameter | Epochen | Val-Loss 1× (03) | Val-Loss 4× (04) | Änderung |
+|---|---|---|---|---|---|
+| winzig | 31 072 | 422 | 1.9584 | 1.9463 | −0.012 |
+| klein | 43 648 | 300 | **1.8874** | 1.8374 | −0.050 |
+| mittel | 136 448 | 96 | 1.9212 | **1.7620** | −0.159 |
+| tief | 235 904 | 56 | 2.0065 | **1.7426** | −0.264 |
+| breit | 469 504 | 28 | 2.2178 | 1.8452 | −0.373 |
+| groß | 865 024 | 15 | 2.4001 | 2.0363 | −0.364 |
+
+**Was belastbar ist:** Das beste Modell hat sich verschoben. Bei 1× war es `klein` (44 000 Parameter), bei 4× sind
+es `mittel` und `tief` (136 000 bis 236 000); `klein` liegt jetzt 0.075 bzw. 0.095 dahinter, mehr als die
+Rauschgrenze von etwa 0.05. Alle Modelle werden mit mehr Rechenmenge besser, die größeren aber viel stärker
+(bis −0.37) als die kleinen (−0.01 bis −0.05). Damit ist die Vermutung aus 03 in diesem Ausschnitt bestätigt: mit mehr
+Rechenmenge lohnt sich ein größeres Modell.
+
+**Was nicht belastbar ist:** `mittel` gegen `tief` (0.019, Rauschen). Aus zwei Punkten (1× und 4×) lässt sich
+auch nicht ablesen, *wie schnell* das beste Modell mit der Rechenmenge wächst; dafür bräuchte es mehr Stufen.
+
+**Nebenbefunde:** `winzig` verbessert sich kaum (−0.012): mit 31 000 Parametern ist seine Kapazität erreicht, mehr Training
+hilft nicht mehr. `groß` liegt auch bei 4× noch 0.29 hinter dem Besten; vermutlich braucht es dafür noch deutlich mehr
+Rechenmenge (Vermutung, nicht gemessen).
+
+**Grenzen:**
+- Der Trainingstext ist nur 1,1 MB groß. Die kleinen Modelle sehen ihn bei 4× etwa 20-mal (422 Epochen × 50 000
+  Token), die großen nur wenige Male. Das vermischt „mehr Parameter“ mit „wie oft derselbe Text gelesen wird“. Mit sehr
+  viel mehr Text ließe sich die Frage sauberer beantworten.
+- Die Lernrate war für alle gleich (0.003), es gab nur einen Seed, und das Ergebnis gilt für dieses Modellschema.
+
 ## Nächste Schritte
 
-Ideen, die mit dieser Vorlage direkt messbar sind: Experiment 03 mit vervielfachter Rechenmenge
-(`basis_epochs` erhöhen) wiederholen und sehen, ob das Optimum zu größeren Modellen wandert; die Lernrate pro
-Modellgröße einstellen; `context`, `batch`. Die Fragen zu Attention, Loss-Funktionen und Präzision aus den Notizen
+Ideen, die mit dieser Vorlage direkt messbar sind: die Lernrate pro Modellgröße einstellen (bisher fest 0.003, bei
+großen Modellen vermutlich zu hoch); mehr und größere Texte; weitere Stufen der Rechenmenge, um zu sehen, wie das
+beste Modell mit ihr wächst; `context`, `batch`. Die Fragen zu Attention, Loss-Funktionen und Präzision aus den Notizen
 brauchen erst Änderungen am Modell selbst; die Messlatte oben ist dann der Vergleichswert.
